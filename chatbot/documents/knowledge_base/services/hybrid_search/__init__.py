@@ -7,4 +7,4 @@ from .core import HybridSearchService
 from .strategies import SearchStrategy
 from .models import SearchResult
 
-__all__ = ['HybridSearchService', 'SearchStrategy', 'SearchResult']
+__all__ = ["HybridSearchService", "SearchStrategy", "SearchResult"]

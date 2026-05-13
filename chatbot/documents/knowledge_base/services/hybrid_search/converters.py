@@ -11,12 +11,14 @@ from .models import SearchResult
 
 logger = logging.getLogger(__name__)
 
+
 class ResultConverters:
     """Converts search results to document objects"""
-    
+
     @classmethod
-    def convert_to_documents(cls, results: List[SearchResult], page: int,
-                           per_page: int) -> Tuple[List[KnowledgeDocument], int]:
+    def convert_to_documents(
+        cls, results: List[SearchResult], page: int, per_page: int
+    ) -> Tuple[List[KnowledgeDocument], int]:
         """Konvertiert SearchResults zu KnowledgeDocument Objekten (KB + BookStack)"""
         total_count = len(results)
 
@@ -35,7 +37,10 @@ class ResultConverters:
         bookstack_results = []
 
         for result in page_results:
-            if result.metadata and result.metadata.get('source') in ['bookstack', 'bookstack_chunk']:
+            if result.metadata and result.metadata.get("source") in [
+                "bookstack",
+                "bookstack_chunk",
+            ]:
                 bookstack_results.append(result)
             else:
                 kb_results.append(result)
@@ -46,26 +51,40 @@ class ResultConverters:
 
                 # Lade KB Dokumente
                 if kb_results:
-                    kb_doc_ids = [r.doc_id for r in kb_results if isinstance(r.doc_id, int)]
+                    kb_doc_ids = [
+                        r.doc_id for r in kb_results if isinstance(r.doc_id, int)
+                    ]
                     if kb_doc_ids:
-                        placeholders = ','.join('?' * len(kb_doc_ids))
-                        cursor.execute(f'''
+                        placeholders = ",".join("?" * len(kb_doc_ids))
+                        cursor.execute(
+                            f"""
                             SELECT * FROM kb_documents
                             WHERE id IN ({placeholders})
-                        ''', kb_doc_ids)
+                        """,
+                            kb_doc_ids,
+                        )
 
-                        doc_data = {row['id']: dict(row) for row in cursor.fetchall()}
+                        doc_data = {row["id"]: dict(row) for row in cursor.fetchall()}
 
                         # Erstelle KB KnowledgeDocument Objekte
                         for result in kb_results:
-                            if isinstance(result.doc_id, int) and result.doc_id in doc_data:
-                                doc = KnowledgeDocument.from_db_row(doc_data[result.doc_id])
+                            if (
+                                isinstance(result.doc_id, int)
+                                and result.doc_id in doc_data
+                            ):
+                                doc = KnowledgeDocument.from_db_row(
+                                    doc_data[result.doc_id]
+                                )
 
                                 # Füge Such-Metadaten hinzu
                                 doc.search_snippet = result.snippet
                                 doc.relevance_score = result.relevance_score
                                 doc.match_type = result.match_type.value
-                                doc.matched_chunks = len(result.matched_chunks) if result.matched_chunks else 0
+                                doc.matched_chunks = (
+                                    len(result.matched_chunks)
+                                    if result.matched_chunks
+                                    else 0
+                                )
 
                                 documents.append(doc)
 
@@ -80,12 +99,12 @@ class ResultConverters:
             logger.error(f"Fehler beim Laden der Dokumente: {str(e)}")
 
         # Sortiere nach Relevanz-Score
-        documents.sort(key=lambda d: getattr(d, 'relevance_score', 0), reverse=True)
+        documents.sort(key=lambda d: getattr(d, "relevance_score", 0), reverse=True)
 
         return documents, total_count
 
     @classmethod
-    def _create_bookstack_document(cls, result: SearchResult) -> 'KnowledgeDocument':
+    def _create_bookstack_document(cls, result: SearchResult) -> "KnowledgeDocument":
         """Erstellt ein virtuelles KnowledgeDocument für BookStack Content"""
         try:
             metadata = result.metadata
@@ -96,10 +115,10 @@ class ResultConverters:
                 title=result.doc_title,
                 original_filename=result.doc_filename,
                 filename=result.doc_filename,
-                file_type='bookstack',
+                file_type="bookstack",
                 file_size=0,
                 uploaded_at=None,
-                is_active=True
+                is_active=True,
             )
 
             # Füge BookStack-spezifische Metadaten hinzu
@@ -109,10 +128,10 @@ class ResultConverters:
             doc.matched_chunks = 0
 
             # BookStack-spezifische Felder
-            doc.bookstack_id = metadata.get('bookstack_id')
-            doc.bookstack_type = metadata.get('content_type')
-            doc.bookstack_url = metadata.get('url')
-            doc.chunk_index = metadata.get('chunk_index')
+            doc.bookstack_id = metadata.get("bookstack_id")
+            doc.bookstack_type = metadata.get("content_type")
+            doc.bookstack_url = metadata.get("url")
+            doc.chunk_index = metadata.get("chunk_index")
 
             return doc
 

@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 from typing import List, Dict
 from .strategies import SearchStrategy
 
+
 @dataclass
 class SearchResult:
     """Einzelnes Suchergebnis"""
+
     doc_id: int
     doc_title: str
     doc_filename: str

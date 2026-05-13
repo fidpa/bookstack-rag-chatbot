@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-13
+
+### Fixed
+- Black formatting applied across all Python files (69 files reformatted)
+
 ## [0.1.1] — 2026-05-13
 
 ### Fixed

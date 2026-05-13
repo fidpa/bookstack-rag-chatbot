@@ -14,19 +14,21 @@ import logging
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def get_db_path():
     """Get database path"""
     # Check if running in container
-    if os.path.exists('/app/data'):
-        db_path = '/app/data/chatbot.db'
-    elif os.path.exists('/data'):
-        db_path = '/data/chatbot.db'
+    if os.path.exists("/app/data"):
+        db_path = "/app/data/chatbot.db"
+    elif os.path.exists("/data"):
+        db_path = "/data/chatbot.db"
     else:
-        db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'chatbot.db')
+        db_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data", "chatbot.db"
+        )
 
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     return db_path
@@ -59,7 +61,7 @@ def init_kb_schema(force=False):
             logger.warning(f"⚠️  Existing KB tables: {', '.join(existing_tables)}")
             if not force:
                 response = input("Tables exist. Drop and recreate? (yes/no): ")
-                if response.lower() != 'yes':
+                if response.lower() != "yes":
                     logger.info("❌ Aborted. Use --force to skip confirmation.")
                     return False
 
@@ -133,8 +135,12 @@ def init_kb_schema(force=False):
 
         # Create indexes for performance
         logger.info("⚡ Creating indexes...")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc_id ON kb_chunks(doc_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_kb_tags_document_id ON kb_tags(document_id)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kb_chunks_doc_id ON kb_chunks(doc_id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kb_tags_document_id ON kb_tags(document_id)"
+        )
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_kb_tags_tag ON kb_tags(tag)")
 
         # Create FTS triggers for automatic sync
@@ -174,6 +180,7 @@ def init_kb_schema(force=False):
     except Exception as e:
         logger.error(f"❌ Schema initialization failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -181,8 +188,10 @@ def init_kb_schema(force=False):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='Initialize Knowledge Base Schema')
-    parser.add_argument('--force', action='store_true', help='Skip confirmation prompts')
+    parser = argparse.ArgumentParser(description="Initialize Knowledge Base Schema")
+    parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompts"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -197,8 +206,12 @@ if __name__ == "__main__":
         print("✅ Schema initialization complete!")
         print("=" * 60)
         print("\n📝 Next steps:")
-        print("   1. Upload documents: docker exec chatbot python3 /app/scripts/upload_pdf_to_kb.py <file>")
-        print("   2. Check status: docker exec chatbot python3 /app/scripts/kb_admin.py stats overview")
+        print(
+            "   1. Upload documents: docker exec chatbot python3 /app/scripts/upload_pdf_to_kb.py <file>"
+        )
+        print(
+            "   2. Check status: docker exec chatbot python3 /app/scripts/kb_admin.py stats overview"
+        )
         sys.exit(0)
     else:
         print("\n❌ Schema initialization failed")

@@ -14,7 +14,7 @@ class ICDCodeExtractor:
     """Extrahiert ICD-10-Codes aus Queries und Text"""
 
     # ICD-10 Patterns (M, S, Z, etc. + 2 Ziffern + Punkt + 0-2 Ziffern)
-    ICD10_PATTERN = re.compile(r'\b([A-Z]\d{2})\.?(\d{0,2})\-?\b', re.IGNORECASE)
+    ICD10_PATTERN = re.compile(r"\b([A-Z]\d{2})\.?(\d{0,2})\-?\b", re.IGNORECASE)
 
     @classmethod
     def extract_icd_codes(cls, text: str) -> List[str]:
@@ -52,8 +52,8 @@ class ICDCodeExtractor:
                 code = base
 
             # Prüfe ob Trailing Dash (M08.0- → M08.0-)
-            if text[match.end():match.end()+1] == '-':
-                code += '-'
+            if text[match.end() : match.end() + 1] == "-":
+                code += "-"
 
             codes.append(code)
 
@@ -76,7 +76,7 @@ class ICDCodeExtractor:
             "M05.3" → ["M05.3"] (bereits konkret)
         """
         # Wenn bereits konkret → direkt zurück
-        if '.' in icd_code:
+        if "." in icd_code:
             return [icd_code]
 
         # ICD-Familie → Generiere .0 bis .9 Varianten
@@ -86,12 +86,14 @@ class ICDCodeExtractor:
         # Standard-Subcodes 0-9
         for i in range(10):
             expanded.append(f"{base}.{i}-")  # Mit Trailing-Dash
-            expanded.append(f"{base}.{i}")   # Ohne Trailing-Dash
+            expanded.append(f"{base}.{i}")  # Ohne Trailing-Dash
 
         return expanded
 
     @classmethod
-    def get_icd_boost_query(cls, original_query: str, icd_codes: List[str]) -> Tuple[str, float]:
+    def get_icd_boost_query(
+        cls, original_query: str, icd_codes: List[str]
+    ) -> Tuple[str, float]:
         """
         Erstellt boosted FTS5-Query mit ICD-Codes
 
@@ -112,7 +114,7 @@ class ICDCodeExtractor:
         # Erweitere ICD-Familien
         expanded_codes = []
         for code in icd_codes:
-            if '.' not in code:
+            if "." not in code:
                 # Familie → Erweitere
                 expanded_codes.extend(cls.expand_icd_family(code)[:5])  # Top 5
             else:
@@ -120,18 +122,20 @@ class ICDCodeExtractor:
                 expanded_codes.append(code)
 
         # Entferne Punkte für FTS5 (M05.3 → M053 wegen FTS5-Preprocessing)
-        fts5_codes = [code.replace('.', '').replace('-', '') for code in expanded_codes]
+        fts5_codes = [code.replace(".", "").replace("-", "") for code in expanded_codes]
 
         # Deduplizierung
         fts5_codes = list(dict.fromkeys(fts5_codes))
 
         # Boost-Query: ICD-Codes ZUERST (höchste Priorität)
-        boosted_query = ' OR '.join(fts5_codes) + ' OR ' + original_query
+        boosted_query = " OR ".join(fts5_codes) + " OR " + original_query
 
         # Boost-Factor für Ranking
         boost_factor = 3.0  # ICD-Code-Matches werden 3x höher gerankt
 
-        logger.info(f"ICD-Boost: {icd_codes} → {fts5_codes[:3]}... (boost={boost_factor})")
+        logger.info(
+            f"ICD-Boost: {icd_codes} → {fts5_codes[:3]}... (boost={boost_factor})"
+        )
 
         return (boosted_query, boost_factor)
 
@@ -193,12 +197,14 @@ class MedicalSynonymExpander:
         limited_synonyms = synonyms[:max_synonyms]
 
         # Append zu Original-Query
-        expanded = original_query + ' OR ' + ' OR '.join(limited_synonyms)
+        expanded = original_query + " OR " + " OR ".join(limited_synonyms)
 
-        logger.info(f"Synonym-Expansion: +{len(limited_synonyms)} Terme ({limited_synonyms[:3]}...)")
+        logger.info(
+            f"Synonym-Expansion: +{len(limited_synonyms)} Terme ({limited_synonyms[:3]}...)"
+        )
 
         return expanded
 
 
 # Export
-__all__ = ['ICDCodeExtractor', 'MedicalSynonymExpander']
+__all__ = ["ICDCodeExtractor", "MedicalSynonymExpander"]

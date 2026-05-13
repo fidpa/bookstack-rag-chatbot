@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Union
 
 # Zentrale Zeitzone für die Anwendung
-APP_TIMEZONE = pytz.timezone('Europe/Berlin')
+APP_TIMEZONE = pytz.timezone("Europe/Berlin")
 
 
 def now_local() -> datetime:
@@ -28,10 +28,12 @@ def now_local_str() -> str:
     Returns:
         str: Zeit im Format "2025-09-22 14:12:06 CEST"
     """
-    return now_local().strftime('%Y-%m-%d %H:%M:%S %Z')
+    return now_local().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-def format_time_local(time_input: Union[str, datetime], include_timezone: bool = True) -> str:
+def format_time_local(
+    time_input: Union[str, datetime], include_timezone: bool = True
+) -> str:
     """
     Konvertiert verschiedene Zeit-Formate zu lokaler Zeit-Anzeige
 
@@ -55,10 +57,10 @@ def format_time_local(time_input: Union[str, datetime], include_timezone: bool =
     try:
         if isinstance(time_input, str):
             # Parse verschiedene String-Formate
-            if time_input.endswith('Z'):
+            if time_input.endswith("Z"):
                 # UTC Format mit Z (BookStack API)
-                dt = datetime.fromisoformat(time_input.replace('Z', '+00:00'))
-            elif '+' in time_input or time_input.endswith('+00:00'):
+                dt = datetime.fromisoformat(time_input.replace("Z", "+00:00"))
+            elif "+" in time_input or time_input.endswith("+00:00"):
                 # ISO Format mit Zeitzone
                 dt = datetime.fromisoformat(time_input)
             else:
@@ -77,9 +79,9 @@ def format_time_local(time_input: Union[str, datetime], include_timezone: bool =
 
         # Format
         if include_timezone:
-            return local_time.strftime('%Y-%m-%d %H:%M:%S %Z')
+            return local_time.strftime("%Y-%m-%d %H:%M:%S %Z")
         else:
-            return local_time.strftime('%Y-%m-%d %H:%M:%S')
+            return local_time.strftime("%Y-%m-%d %H:%M:%S")
 
     except Exception as e:
         # Fallback bei Parse-Fehlern
@@ -97,8 +99,8 @@ def utc_to_local(utc_time: Union[str, datetime]) -> datetime:
         datetime: Lokale Zeit mit Zeitzone
     """
     if isinstance(utc_time, str):
-        if utc_time.endswith('Z'):
-            dt = datetime.fromisoformat(utc_time.replace('Z', '+00:00'))
+        if utc_time.endswith("Z"):
+            dt = datetime.fromisoformat(utc_time.replace("Z", "+00:00"))
         else:
             dt = datetime.fromisoformat(utc_time).replace(tzinfo=pytz.UTC)
     else:
@@ -182,8 +184,10 @@ def format_webhook_time(webhook_data: dict) -> dict:
     Returns:
         dict: Webhook-Daten mit zusätzlichen Zeit-Feldern
     """
-    if 'triggered_at' in webhook_data:
-        webhook_data['triggered_at_local'] = format_time_local(webhook_data['triggered_at'])
+    if "triggered_at" in webhook_data:
+        webhook_data["triggered_at_local"] = format_time_local(
+            webhook_data["triggered_at"]
+        )
 
     return webhook_data
 
@@ -193,8 +197,8 @@ def test_timezone_conversion():
     """Test verschiedene Zeit-Konvertierungen"""
     test_times = [
         "2025-09-22T11:49:21.000000Z",  # BookStack API
-        "2025-09-22 12:12:06",          # SQLite UTC
-        "2025-09-22T14:12:06+02:00",    # ISO mit Zeitzone
+        "2025-09-22 12:12:06",  # SQLite UTC
+        "2025-09-22T14:12:06+02:00",  # ISO mit Zeitzone
     ]
 
     print("Timezone Conversion Tests:")

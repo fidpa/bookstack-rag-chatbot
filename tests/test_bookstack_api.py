@@ -2,16 +2,18 @@
 """
 Test script for BookStack API
 """
+
 import os
 import requests
+
 
 def test_bookstack_api():
     """Test BookStack API connectivity"""
 
     # Configuration
-    base_url = os.getenv('BOOKSTACK_URL', 'http://bookstack:80')
-    token_id = os.getenv('BOOKSTACK_TOKEN_ID', '')
-    token_secret = os.getenv('BOOKSTACK_TOKEN_SECRET', '')
+    base_url = os.getenv("BOOKSTACK_URL", "http://bookstack:80")
+    token_id = os.getenv("BOOKSTACK_TOKEN_ID", "")
+    token_secret = os.getenv("BOOKSTACK_TOKEN_SECRET", "")
 
     print("Testing BookStack API:")
     print(f"Base URL: {base_url}")
@@ -25,18 +27,16 @@ def test_bookstack_api():
 
     # Setup session with auth
     session = requests.Session()
-    session.headers.update({
-        'Authorization': f'Token {token_id}:{token_secret}',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    })
+    session.headers.update(
+        {
+            "Authorization": f"Token {token_id}:{token_secret}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+    )
 
     # Test different endpoints
-    endpoints = [
-        '/api/docs',
-        '/api/books',
-        '/api/pages'
-    ]
+    endpoints = ["/api/docs", "/api/books", "/api/pages"]
 
     for endpoint in endpoints:
         url = f"{base_url.rstrip('/')}{endpoint}"
@@ -50,7 +50,7 @@ def test_bookstack_api():
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    if 'data' in data:
+                    if "data" in data:
                         print(f"  Results: {len(data['data'])} items")
                     else:
                         print(f"  Response keys: {list(data.keys())}")
@@ -65,6 +65,7 @@ def test_bookstack_api():
         print()
 
     return True
+
 
 if __name__ == "__main__":
     test_bookstack_api()

@@ -25,7 +25,9 @@ class ChatContextBuilder:
     """Service for building context from BookStack + Knowledge Base (Dual-RAG)"""
 
     @classmethod
-    def build_combined_context(cls, user_message: str, bookstack_context: dict = None) -> str:
+    def build_combined_context(
+        cls, user_message: str, bookstack_context: dict = None
+    ) -> str:
         """
         Build context from BookStack + Knowledge Base (Dual-RAG)
 
@@ -41,16 +43,20 @@ class ChatContextBuilder:
         # 1. BookStack context (primary source - wiki content)
         if bookstack_context:
             try:
-                page_title = bookstack_context.get('title', 'Unknown Page')
-                page_content = bookstack_context.get('content', '')
-                page_url = bookstack_context.get('url', '')
+                page_title = bookstack_context.get("title", "Unknown Page")
+                page_content = bookstack_context.get("content", "")
+                page_url = bookstack_context.get("url", "")
 
                 if page_content:
                     combined_context = f"BookStack Page: {page_title}\n"
                     if page_url:
                         combined_context += f"URL: {page_url}\n"
-                    combined_context += f"Content:\n{page_content[:2000]}..."  # Limit to 2000 chars
-                    logger.info(f"Added BookStack page context: {page_title} ({len(page_content)} chars)")
+                    combined_context += (
+                        f"Content:\n{page_content[:2000]}..."  # Limit to 2000 chars
+                    )
+                    logger.info(
+                        f"Added BookStack page context: {page_title} ({len(page_content)} chars)"
+                    )
 
             except Exception as e:
                 logger.error(f"Error processing BookStack context: {str(e)}")
@@ -59,13 +65,19 @@ class ChatContextBuilder:
         if not combined_context and BookStackSyncService:
             try:
                 # Search relevant BookStack content
-                search_results = BookStackSyncService.search_content(user_message, limit=3)
+                search_results = BookStackSyncService.search_content(
+                    user_message, limit=3
+                )
                 if search_results:
                     context_parts = []
                     for result in search_results:
-                        context_parts.append(f"Page: {result.get('title', 'Unknown')}\n{result.get('content', '')[:500]}...")
+                        context_parts.append(
+                            f"Page: {result.get('title', 'Unknown')}\n{result.get('content', '')[:500]}..."
+                        )
                     combined_context = "\n\n---\n\n".join(context_parts)
-                    logger.info(f"Added BookStack search context ({len(combined_context)} chars)")
+                    logger.info(
+                        f"Added BookStack search context ({len(combined_context)} chars)"
+                    )
             except Exception as e:
                 logger.error(f"Error searching BookStack content: {str(e)}")
 
@@ -74,9 +86,7 @@ class ChatContextBuilder:
             try:
                 logger.debug(f"Searching Knowledge Base for: {user_message}")
                 kb_context = KBContextService.build_knowledge_context(
-                    user_query=user_message,
-                    max_docs=3,
-                    use_chunks=True
+                    user_query=user_message, max_docs=3, use_chunks=True
                 )
 
                 if kb_context:
@@ -84,7 +94,9 @@ class ChatContextBuilder:
                     if combined_context:
                         combined_context += "\n\n--- Knowledge Base Documents ---\n\n"
                     combined_context += kb_context
-                    logger.info(f"Added Knowledge Base context ({len(kb_context)} chars)")
+                    logger.info(
+                        f"Added Knowledge Base context ({len(kb_context)} chars)"
+                    )
                 else:
                     logger.debug("No relevant KB documents found")
 
@@ -92,7 +104,7 @@ class ChatContextBuilder:
                 logger.error(f"Error searching Knowledge Base: {str(e)}", exc_info=True)
 
         return combined_context
-    
+
     @classmethod
     def create_context_message(cls, combined_context: str) -> dict:
         """
@@ -106,11 +118,11 @@ class ChatContextBuilder:
         """
         if combined_context:
             return {
-                'role': 'system',
-                'content': f'KONTEXT: Du hast Zugriff auf zwei Wissensquellen:\n1. BookStack Wiki-Seiten (Team-Dokumentation)\n2. Hochgeladene Dokumente/PDFs (Spezialwissen)\n\nRelevanter Inhalt:\n\n{combined_context}\n\nBitte beantworte die Frage basierend auf diesem Kontext. Beziehe dich konkret auf die Quellen wenn möglich.'
+                "role": "system",
+                "content": f"KONTEXT: Du hast Zugriff auf zwei Wissensquellen:\n1. BookStack Wiki-Seiten (Team-Dokumentation)\n2. Hochgeladene Dokumente/PDFs (Spezialwissen)\n\nRelevanter Inhalt:\n\n{combined_context}\n\nBitte beantworte die Frage basierend auf diesem Kontext. Beziehe dich konkret auf die Quellen wenn möglich.",
             }
         else:
             return {
-                'role': 'system',
-                'content': 'Du bist ein hilfreicher Assistent für BookStack und Wissensdokumente. Beantworte Fragen präzise und hilfreich.'
+                "role": "system",
+                "content": "Du bist ein hilfreicher Assistent für BookStack und Wissensdokumente. Beantworte Fragen präzise und hilfreich.",
             }

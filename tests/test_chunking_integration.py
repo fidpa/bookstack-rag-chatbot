@@ -11,14 +11,15 @@ import os
 import logging
 
 # Add the chatbot directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'chatbot'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "chatbot"))
 
 from bookstack.chunking import BookStackChunkingService
 from bookstack.sync_service import ContentSyncService
 
-
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -83,11 +84,11 @@ def test_chunking_service():
     chunks = chunking_service.chunk_bookstack_content(
         text=test_content,
         bookstack_id=123,
-        content_type='page',
-        title='Installation Guide',
-        url='http://bookstack/books/docs/page/installation-guide',
+        content_type="page",
+        title="Installation Guide",
+        url="http://bookstack/books/docs/page/installation-guide",
         book_id=1,
-        chapter_id=None
+        chapter_id=None,
     )
 
     print(f"✅ Generated {len(chunks)} chunks")
@@ -125,7 +126,7 @@ def test_database_integration():
     print("\n🗄️ Testing Database Integration...")
 
     # Test database path (use temporary for testing)
-    db_path = 'test_bookstack.db'
+    db_path = "test_bookstack.db"
 
     try:
         # Create a mock client (we don't need real API for this test)
@@ -137,7 +138,7 @@ def test_database_integration():
         sync_service = ContentSyncService(
             bookstack_client=MockBookStackClient(),
             db_path=db_path,
-            enable_chunking=True
+            enable_chunking=True,
         )
 
         print("✅ Database tables created successfully")
@@ -147,13 +148,13 @@ def test_database_integration():
 
         sync_service._store_content(
             bookstack_id=999,
-            type='page',
-            title='Test Page',
+            type="page",
+            title="Test Page",
             content=test_content,
-            url='http://test/page/999',
+            url="http://test/page/999",
             book_id=1,
             chapter_id=None,
-            tags=['test', 'demo']
+            tags=["test", "demo"],
         )
 
         print("✅ Content stored with chunking")
@@ -177,8 +178,8 @@ def test_database_integration():
         print("📊 Sync Statistics:")
         print(f"   - Content counts: {stats['content_counts']}")
         print(f"   - Chunking enabled: {stats['chunking_enabled']}")
-        if stats['chunk_stats']:
-            chunk_stats = stats['chunk_stats']
+        if stats["chunk_stats"]:
+            chunk_stats = stats["chunk_stats"]
             print(f"   - Total chunks: {chunk_stats['total_chunks']}")
             print(f"   - Avg words/chunk: {chunk_stats['avg_words_per_chunk']}")
 
@@ -214,8 +215,8 @@ def test_performance():
     chunks = chunking_service.chunk_bookstack_content(
         text=large_content,
         bookstack_id=9999,
-        content_type='page',
-        title='Performance Test Page',
+        content_type="page",
+        title="Performance Test Page",
     )
 
     end_time = time.time()

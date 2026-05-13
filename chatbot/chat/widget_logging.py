@@ -27,7 +27,7 @@ class WidgetLogger:
         bookstack_context: Optional[Dict[str, Any]] = None,
         response_time_ms: Optional[int] = None,
         llm_provider: Optional[str] = None,
-        llm_model: Optional[str] = None
+        llm_model: Optional[str] = None,
     ) -> bool:
         """
         Log a widget chat message to database
@@ -55,19 +55,23 @@ class WidgetLogger:
             bs_book_title = None
 
             if bookstack_context:
-                bs_page_id = bookstack_context.get('page_id')
-                bs_page_title = bookstack_context.get('title')
-                bs_page_url = bookstack_context.get('url')
-                bs_book_id = bookstack_context.get('book_id')
-                bs_book_title = bookstack_context.get('book_title')
+                bs_page_id = bookstack_context.get("page_id")
+                bs_page_title = bookstack_context.get("title")
+                bs_page_url = bookstack_context.get("url")
+                bs_book_id = bookstack_context.get("book_id")
+                bs_book_title = bookstack_context.get("book_title")
 
             # Get request info
             ip_address = None
             user_agent = None
             try:
                 if request:
-                    ip_address = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR'))
-                    user_agent = request.environ.get('HTTP_USER_AGENT', '')[:500]  # Truncate long user agents
+                    ip_address = request.environ.get(
+                        "HTTP_X_FORWARDED_FOR", request.environ.get("REMOTE_ADDR")
+                    )
+                    user_agent = request.environ.get("HTTP_USER_AGENT", "")[
+                        :500
+                    ]  # Truncate long user agents
             except RuntimeError:
                 # Outside request context
                 pass
@@ -83,7 +87,8 @@ class WidgetLogger:
 
                 # Insert log entry mit expliziter lokaler Zeitzone
                 timestamp = format_for_database()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO widget_chat_logs (
                         session_id, message_type, content,
                         bookstack_page_id, bookstack_page_title, bookstack_page_url,
@@ -91,29 +96,47 @@ class WidgetLogger:
                         response_time_ms, llm_provider, llm_model,
                         ip_address, user_agent, word_count, language, timestamp
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    session_id, message_type, content,
-                    bs_page_id, bs_page_title, bs_page_url,
-                    bs_book_id, bs_book_title,
-                    response_time_ms, llm_provider, llm_model,
-                    ip_address, user_agent, word_count, language, timestamp
-                ))
+                """,
+                    (
+                        session_id,
+                        message_type,
+                        content,
+                        bs_page_id,
+                        bs_page_title,
+                        bs_page_url,
+                        bs_book_id,
+                        bs_book_title,
+                        response_time_ms,
+                        llm_provider,
+                        llm_model,
+                        ip_address,
+                        user_agent,
+                        word_count,
+                        language,
+                        timestamp,
+                    ),
+                )
 
                 log_id = cursor.lastrowid
 
                 # Update FTS index for searchability
-                if content and message_type == 'user':  # Only index user questions
+                if content and message_type == "user":  # Only index user questions
                     try:
-                        cursor.execute("""
+                        cursor.execute(
+                            """
                             INSERT INTO widget_chat_fts (log_id, content)
                             VALUES (?, ?)
-                        """, (log_id, content))
+                        """,
+                            (log_id, content),
+                        )
                     except Exception as fts_error:
                         logger.warning(f"Failed to update FTS index: {fts_error}")
 
                 conn.commit()
 
-                logger.debug(f"Logged widget message: {message_type} from session {session_id[:8]}...")
+                logger.debug(
+                    f"Logged widget message: {message_type} from session {session_id[:8]}..."
+                )
                 return True
 
         except Exception as e:
@@ -153,7 +176,8 @@ class WidgetLogger:
                 cursor = conn.cursor()
 
                 # Get basic session info
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         COUNT(*) as total_messages,
                         COUNT(CASE WHEN message_type = 'user' THEN 1 END) as user_messages,
@@ -164,7 +188,9 @@ class WidgetLogger:
                         COUNT(DISTINCT bookstack_page_id) as pages_visited
                     FROM widget_chat_logs
                     WHERE session_id = ?
-                """, (session_id,))
+                """,
+                    (session_id,),
+                )
 
                 row = cursor.fetchone()
                 return dict(row) if row else {}
@@ -183,10 +209,13 @@ class WidgetLogger:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT * FROM widget_frequent_questions
                     LIMIT ?
-                """, (limit,))
+                """,
+                    (limit,),
+                )
 
                 return [dict(row) for row in cursor.fetchall()]
 
@@ -204,10 +233,13 @@ class WidgetLogger:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT * FROM widget_page_analytics
                     LIMIT ?
-                """, (limit,))
+                """,
+                    (limit,),
+                )
 
                 return [dict(row) for row in cursor.fetchall()]
 
@@ -228,7 +260,8 @@ class WidgetLogger:
                 # Use FTS5 MATCH syntax
                 search_query = query.replace("'", "''")  # Escape quotes
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT l.content, l.timestamp, l.bookstack_page_title,
                            f.rank
                     FROM widget_chat_fts f
@@ -236,7 +269,9 @@ class WidgetLogger:
                     WHERE f.content MATCH ?
                     ORDER BY f.rank
                     LIMIT ?
-                """, (search_query, limit))
+                """,
+                    (search_query, limit),
+                )
 
                 return [dict(row) for row in cursor.fetchall()]
 
@@ -255,7 +290,8 @@ class WidgetLogger:
                 cursor = conn.cursor()
 
                 # Get stats for last N days
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         COUNT(*) as total_messages,
                         COUNT(DISTINCT session_id) as unique_sessions,
@@ -267,12 +303,15 @@ class WidgetLogger:
                         MAX(timestamp) as latest_message
                     FROM widget_chat_logs
                     WHERE timestamp >= datetime('now', '-' || ? || ' days')
-                """, (days,))
+                """,
+                    (days,),
+                )
 
                 stats = dict(cursor.fetchone()) if cursor.fetchone() else {}
 
                 # Get provider distribution
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT llm_provider, COUNT(*) as count
                     FROM widget_chat_logs
                     WHERE message_type = 'assistant'
@@ -280,9 +319,13 @@ class WidgetLogger:
                     AND llm_provider IS NOT NULL
                     GROUP BY llm_provider
                     ORDER BY count DESC
-                """, (days,))
+                """,
+                    (days,),
+                )
 
-                stats['provider_distribution'] = [dict(row) for row in cursor.fetchall()]
+                stats["provider_distribution"] = [
+                    dict(row) for row in cursor.fetchall()
+                ]
 
                 return stats
 
@@ -294,19 +337,41 @@ class WidgetLogger:
     def _detect_language(content: str) -> str:
         """Simple language detection based on common words"""
         if not content:
-            return 'de'
+            return "de"
 
         content_lower = content.lower()
 
         # German indicators
-        german_words = ['der', 'die', 'das', 'und', 'ist', 'ich', 'wie', 'was', 'kann', 'haben']
+        german_words = [
+            "der",
+            "die",
+            "das",
+            "und",
+            "ist",
+            "ich",
+            "wie",
+            "was",
+            "kann",
+            "haben",
+        ]
         # English indicators
-        english_words = ['the', 'and', 'is', 'can', 'have', 'how', 'what', 'this', 'that', 'with']
+        english_words = [
+            "the",
+            "and",
+            "is",
+            "can",
+            "have",
+            "how",
+            "what",
+            "this",
+            "that",
+            "with",
+        ]
 
         german_count = sum(1 for word in german_words if word in content_lower)
         english_count = sum(1 for word in english_words if word in content_lower)
 
-        return 'en' if english_count > german_count else 'de'
+        return "en" if english_count > german_count else "de"
 
     @staticmethod
     def cleanup_old_logs(days_to_keep: int = 90) -> int:
@@ -326,19 +391,26 @@ class WidgetLogger:
                 cursor = conn.cursor()
 
                 # Delete old logs
-                cursor.execute("""
+                cursor.execute(
+                    """
                     DELETE FROM widget_chat_logs
                     WHERE timestamp < datetime('now', '-' || ? || ' days')
-                """, (days_to_keep,))
+                """,
+                    (days_to_keep,),
+                )
 
                 deleted_count = cursor.rowcount
 
                 # Clean up FTS index (SQLite will handle this automatically)
-                cursor.execute("INSERT INTO widget_chat_fts(widget_chat_fts) VALUES('optimize')")
+                cursor.execute(
+                    "INSERT INTO widget_chat_fts(widget_chat_fts) VALUES('optimize')"
+                )
 
                 conn.commit()
 
-                logger.info(f"Cleaned up {deleted_count} old widget log entries (older than {days_to_keep} days)")
+                logger.info(
+                    f"Cleaned up {deleted_count} old widget log entries (older than {days_to_keep} days)"
+                )
                 return deleted_count
 
         except Exception as e:

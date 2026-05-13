@@ -11,8 +11,8 @@ from .sync_service import ContentSyncService
 from .webhooks import setup_webhook_routes
 
 __all__ = [
-    'BookStackClient',
-    'BookStackAPIError', 
-    'ContentSyncService',
-    'setup_webhook_routes'
+    "BookStackClient",
+    "BookStackAPIError",
+    "ContentSyncService",
+    "setup_webhook_routes",
 ]

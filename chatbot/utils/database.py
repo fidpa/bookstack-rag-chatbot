@@ -22,17 +22,19 @@ def _apply_performance_pragmas(conn):
 
         # Performance Pragmas for Widget Backend
         performance_pragmas = [
-            "PRAGMA synchronous = NORMAL",         # Better write performance (was FULL)
-            "PRAGMA temp_store = MEMORY",          # Temp tables/indexes in memory
-            "PRAGMA cache_size = -8000",           # 8MB cache (was 2MB)
-            "PRAGMA mmap_size = 268435456",        # 256MB memory mapping
-            "PRAGMA busy_timeout = 5000",          # 5 second timeout (keep current)
+            "PRAGMA synchronous = NORMAL",  # Better write performance (was FULL)
+            "PRAGMA temp_store = MEMORY",  # Temp tables/indexes in memory
+            "PRAGMA cache_size = -8000",  # 8MB cache (was 2MB)
+            "PRAGMA mmap_size = 268435456",  # 256MB memory mapping
+            "PRAGMA busy_timeout = 5000",  # 5 second timeout (keep current)
         ]
 
         for pragma in performance_pragmas:
             cursor.execute(pragma)
 
-        logger.debug("SQLite performance pragmas applied successfully (WAL mode enabled)")
+        logger.debug(
+            "SQLite performance pragmas applied successfully (WAL mode enabled)"
+        )
 
     except Exception as e:
         logger.warning(f"Failed to apply performance pragmas: {e}")
@@ -163,14 +165,14 @@ def get_database_stats():
 
             # Count widget logs
             cursor.execute("SELECT COUNT(*) FROM widget_logs")
-            stats['widget_logs'] = cursor.fetchone()[0]
+            stats["widget_logs"] = cursor.fetchone()[0]
 
             # Count bookstack content
             cursor.execute("SELECT COUNT(*) FROM bookstack_content")
-            stats['bookstack_content'] = cursor.fetchone()[0]
+            stats["bookstack_content"] = cursor.fetchone()[0]
 
             return stats
 
     except Exception as e:
         logger.error(f"Database stats error: {e}")
-        return {'widget_logs': 0, 'bookstack_content': 0}
+        return {"widget_logs": 0, "bookstack_content": 0}
