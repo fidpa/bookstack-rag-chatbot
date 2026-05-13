@@ -8,7 +8,6 @@ import os
 import sys
 import sqlite3
 import logging
-from datetime import datetime
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)

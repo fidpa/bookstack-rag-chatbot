@@ -1,7 +1,7 @@
 """Chunking Service für Knowledge Base - Teilt Dokumente in überlappende Chunks für optimale Suche und LLM-Verarbeitung"""
 import re
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)

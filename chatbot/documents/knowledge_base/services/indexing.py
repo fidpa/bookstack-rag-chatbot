@@ -6,11 +6,11 @@ Verwaltet die Volltext-Indexierung der Dokumente
 import os
 import logging
 from datetime import datetime
-from typing import Optional, Tuple, List, Dict
+from typing import Tuple, List, Dict
 
 from utils.database import get_db_connection
 from ..models import KnowledgeDocument
-from .chunking import ChunkingService, DocumentChunk
+from .chunking import ChunkingService
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@
 
 import os
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict
 
 from llm.base import LLMProvider
 
@@ -32,11 +32,20 @@ except ImportError:
     AZURE_SDK_AVAILABLE = False
     logger.warning("Azure OpenAI SDK not installed. Install with: pip install openai")
     # Dummy exceptions for the case where the SDK is not installed
-    class APIError(Exception): pass
-    class APIConnectionError(Exception): pass
-    class RateLimitError(Exception): pass
-    class AuthenticationError(Exception): pass
-    class BadRequestError(Exception): pass
+    class APIError(Exception):
+        pass
+
+    class APIConnectionError(Exception):
+        pass
+
+    class RateLimitError(Exception):
+        pass
+
+    class AuthenticationError(Exception):
+        pass
+
+    class BadRequestError(Exception):
+        pass
 
 
 class AzureProvider(LLMProvider):

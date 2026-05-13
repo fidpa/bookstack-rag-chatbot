@@ -37,8 +37,6 @@ class ExtendedSearchImplementations:
                 cursor = conn.cursor()
                 
                 # Für AND-Suche: Prüfe ob Dokument alle Keywords enthält
-                placeholders = ','.join('?' * len(keywords[:4]))  # Max 4 keywords
-                
                 query = f'''
                     WITH keyword_matches AS (
                         SELECT 

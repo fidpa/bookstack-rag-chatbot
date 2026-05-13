@@ -7,14 +7,13 @@ overlap-aware chunking for retrieval.
 import os
 import logging
 import sqlite3
-from typing import List, Dict, Optional
-from datetime import datetime
+from typing import List, Dict
 from html import unescape
 import re
 
 # Import the new chunking service
 from .chunking import BookStackChunkingService
-from utils.timezone_helpers import now_local, format_for_database
+from utils.timezone_helpers import format_for_database
 
 logger = logging.getLogger(__name__)
 
@@ -578,7 +577,7 @@ class ContentSyncService:
                 cursor = conn.cursor()
                 cursor.execute('SELECT COUNT(*) FROM bookstack_chunks LIMIT 1')
                 return cursor.fetchone()[0] > 0
-        except:
+        except Exception:
             return False
     
     def get_sync_stats(self) -> Dict:

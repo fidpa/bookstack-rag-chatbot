@@ -4,8 +4,7 @@ Implementiert die Volltext-Suche in der Wissensbasis
 """
 
 import logging
-from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from typing import List, Optional, Tuple
 
 from utils.database import get_db_connection
 from ..models import KnowledgeDocument

@@ -3,7 +3,7 @@ Chunk-based context building strategy
 """
 
 import logging
-from typing import List, Dict
+from typing import List
 
 from utils.database import get_db_connection
 from ...models import KnowledgeDocument

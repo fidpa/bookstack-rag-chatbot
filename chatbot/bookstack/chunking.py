@@ -346,7 +346,7 @@ class BookStackChunkingService:
                 errors.append(f"Chunk hat falschen Index: erwartet {i}, gefunden {chunk.chunk_index}")
 
             # Prüfe BookStack-spezifische Felder
-            if not chunk.content_type in ['page', 'chapter', 'book']:
+            if chunk.content_type not in ['page', 'chapter', 'book']:
                 errors.append(f"Chunk {i} hat ungültigen content_type: {chunk.content_type}")
 
             if chunk.bookstack_id <= 0:

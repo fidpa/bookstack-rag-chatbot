@@ -4,9 +4,9 @@ Contains the actual search implementations for different strategies
 """
 
 import logging
-from typing import List, Dict
+from typing import List
 from utils.database import get_db_connection
-from ..query_processor import QueryProcessor, QueryAnalysis
+from ..query_processor import QueryProcessor
 from .strategies import SearchStrategy
 from .models import SearchResult
 
@@ -65,7 +65,7 @@ class SearchImplementations:
                         doc_filename=row['original_filename'],
                         relevance_score=cls.STRATEGY_WEIGHTS[SearchStrategy.TITLE_TAG],
                         match_type=SearchStrategy.TITLE_TAG,
-                        snippet=f"Treffer in Titel/Tags"
+                        snippet="Treffer in Titel/Tags"
                     ))
                     
         except Exception as e:

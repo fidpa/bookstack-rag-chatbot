@@ -120,9 +120,9 @@ class BookStackClient:
         try:
             self._make_request('GET', 'docs')
             return True
-        except:
+        except Exception:
             return False
-    
+
     @with_fallback
     def get_all_books(self) -> List[Dict]:
         """Get all books"""
@@ -261,7 +261,7 @@ class BookStackClient:
         if cached is not None:
             return cached
             
-        response = self._make_request('GET', f'attachments', params={'filter[uploaded_to]': page_id})
+        response = self._make_request('GET', 'attachments', params={'filter[uploaded_to]': page_id})
         attachments = response.get('data', [])
         self._set_cache(cache_key, attachments)
         return attachments

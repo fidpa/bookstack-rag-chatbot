@@ -180,4 +180,4 @@ def setup_webhook_routes(app):
         app: Flask application instance
     """
     app.register_blueprint(webhook_bp)
-    logger.info(f"BookStack webhook routes registered at /webhook/bookstack")
+    logger.info("BookStack webhook routes registered at /webhook/bookstack")

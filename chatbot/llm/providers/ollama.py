@@ -1,9 +1,8 @@
 """Ollama provider — local LLM integration over the Ollama HTTP API."""
 
-import json
 import logging
 import requests
-from typing import List, Dict, Optional
+from typing import List, Dict
 from ..base import LLMProvider
 from ..utils import format_messages_for_chat, sanitize_response
 
@@ -160,7 +159,7 @@ class OllamaProvider(LLMProvider):
                 models = response.json().get('models', [])
                 return [m.get('name', '') for m in models if m.get('name')]
             return []
-        except:
+        except Exception:
             return []
     
     def get_info(self) -> Dict:

@@ -9,7 +9,6 @@ import os
 import sys
 import sqlite3
 import logging
-from datetime import datetime
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))

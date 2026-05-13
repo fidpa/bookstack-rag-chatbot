@@ -7,7 +7,7 @@ from flask import session
 from .base import LLMProvider
 from .providers.ollama import OllamaProvider
 from .providers.azure import AzureProvider
-from .models import DEFAULT_MODELS, get_available_models
+from .models import DEFAULT_MODELS
 
 logger = logging.getLogger(__name__)
 

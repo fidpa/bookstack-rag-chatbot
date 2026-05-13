@@ -5,7 +5,7 @@ Alle Zeiten werden in Europe/Berlin (MESZ/MEZ) mit automatischer Umstellung ange
 
 import pytz
 from datetime import datetime
-from typing import Union, Optional
+from typing import Union
 
 # Zentrale Zeitzone für die Anwendung
 APP_TIMEZONE = pytz.timezone('Europe/Berlin')

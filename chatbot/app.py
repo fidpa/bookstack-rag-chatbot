@@ -3,7 +3,7 @@
 BookStack RAG Chatbot - Flask application entry point.
 """
 
-from flask import Flask, render_template, redirect, url_for, request, session, flash, send_from_directory, jsonify
+from flask import Flask, render_template, redirect, request, send_from_directory, jsonify
 import os
 import logging
 import time
@@ -197,7 +197,6 @@ def register_blueprints(app):
 
 def register_main_routes(app):
     """Register main application routes"""
-    from flask import redirect, url_for
 
     @app.route('/')
     def index():
@@ -255,7 +254,7 @@ def register_context_processors(app):
         else:
             # Production: Use app version or git commit hash
             # For now, use a static version that can be updated on deployment
-            return {'asset_version': app.config.get('APP_VERSION', '0.1.0')}
+            return {'asset_version': app.config.get('APP_VERSION', '0.1.1')}
     
     @app.context_processor
     def inject_globals():

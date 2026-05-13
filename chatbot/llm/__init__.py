@@ -1,7 +1,7 @@
 """LLM package: provider abstractions and helpers."""
 
 from .base import LLMProvider
-from .models import OLLAMA_MODELS, AZURE_MODELS, DEFAULT_MODELS
+from .models import OLLAMA_MODELS, AZURE_MODELS
 
 __all__ = ['LLMProvider', 'get_provider_models', 'is_provider_available', 'get_llm_provider']
 
@@ -36,10 +36,9 @@ def is_provider_available(provider):
         if provider == 'ollama':
             from .providers.ollama import OllamaProvider
             # Try to create provider instance
-            provider_instance = OllamaProvider()
+            OllamaProvider()
             return True
         elif provider == 'azure':
-            from .providers.azure import AzureProvider
             import os
             # Check if Azure credentials are set
             return bool(os.getenv('AZURE_OPENAI_API_KEY') and os.getenv('AZURE_OPENAI_ENDPOINT'))

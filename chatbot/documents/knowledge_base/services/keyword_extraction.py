@@ -4,9 +4,8 @@ Intelligente Keyword-Extraktion mit TF-IDF und N-Grammen
 """
 
 import re
-import math
 import logging
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Tuple
 from collections import Counter, defaultdict
 
 logger = logging.getLogger(__name__)

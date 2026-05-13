@@ -4,7 +4,6 @@ Test script for BookStack API
 """
 import os
 import requests
-import sys
 
 def test_bookstack_api():
     """Test BookStack API connectivity"""
@@ -14,7 +13,7 @@ def test_bookstack_api():
     token_id = os.getenv('BOOKSTACK_TOKEN_ID', '')
     token_secret = os.getenv('BOOKSTACK_TOKEN_SECRET', '')
 
-    print(f"Testing BookStack API:")
+    print("Testing BookStack API:")
     print(f"Base URL: {base_url}")
     print(f"Token ID: {token_id[:8]}...")
     print(f"Token Secret: {token_secret[:8]}...")
@@ -55,7 +54,7 @@ def test_bookstack_api():
                         print(f"  Results: {len(data['data'])} items")
                     else:
                         print(f"  Response keys: {list(data.keys())}")
-                except:
+                except Exception:
                     print(f"  Response (first 100 chars): {response.text[:100]}...")
             else:
                 print(f"  Error: {response.text[:200]}")

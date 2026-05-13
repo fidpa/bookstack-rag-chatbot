@@ -10,7 +10,7 @@ import argparse
 import json
 import time
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 try:
     from documents.knowledge_base.services.storage import StorageService
     from documents.knowledge_base.services.indexing import IndexingService
-    from documents.knowledge_base.models import KnowledgeDocument
+    from documents.knowledge_base.models import KnowledgeDocument  # noqa: F401
     from utils.database import get_db_connection
     from werkzeug.datastructures import FileStorage
 except ImportError as e:
@@ -29,7 +29,7 @@ except ImportError as e:
     sys.exit(1)
 
 # CLI Configuration
-CLI_VERSION = "0.1.0"
+CLI_VERSION = "0.1.1"
 CLI_NAME = "kb_admin"
 
 # Color codes for terminal output
@@ -753,7 +753,7 @@ class KBAdmin:
 
                 # Clean up stale widget sessions (if widget_logs table exists)
                 try:
-                    cursor.execute(f"""
+                    cursor.execute("""
                         SELECT COUNT(*) as count FROM widget_logs
                         WHERE created_at < datetime('now', '-1 day')
                     """)
@@ -768,7 +768,7 @@ class KBAdmin:
                                 DELETE FROM widget_logs
                                 WHERE created_at < datetime('now', '-1 day')
                             """)
-                except:
+                except Exception:
                     # widget_logs table doesn't exist - skip
                     pass
 
@@ -1069,7 +1069,7 @@ class KBAdmin:
                         WHERE created_at > datetime('now', '-24 hours')
                     """)
                     performance = dict(cursor.fetchone())
-                except:
+                except Exception:
                     performance = {'avg_response': 0, 'min_response': 0, 'max_response': 0, 'total_queries': 0}
 
                 # Top search terms (if available)
@@ -1083,7 +1083,7 @@ class KBAdmin:
                         LIMIT 10
                     """)
                     top_queries = [dict(row) for row in cursor.fetchall()]
-                except:
+                except Exception:
                     top_queries = []
 
                 # Storage distribution by file type
@@ -1159,7 +1159,7 @@ class KBAdmin:
                     """)
                     daily_usage = [dict(row) for row in cursor.fetchall()]
                     usage_stats['daily_usage'] = daily_usage
-                except:
+                except Exception:
                     usage_stats['daily_usage'] = []
 
                 # Session statistics
@@ -1187,7 +1187,7 @@ class KBAdmin:
                         }
                     else:
                         usage_stats['session_analysis'] = {'total_sessions': 0, 'avg_messages_per_session': 0}
-                except:
+                except Exception:
                     usage_stats['session_analysis'] = {'total_sessions': 0, 'avg_messages_per_session': 0}
 
                 # Document access patterns
@@ -1258,7 +1258,7 @@ class KBAdmin:
                         WHERE created_at > datetime('now', '-24 hours') AND response_time IS NOT NULL
                     """)
                     query_perf = dict(cursor.fetchone() or {})
-                except:
+                except Exception:
                     query_perf = {}
 
                 # Chunking efficiency
@@ -1569,7 +1569,7 @@ Examples:
     index_subparsers = index_parser.add_subparsers(dest='index_action', help='Index actions')
 
     # index status
-    index_status = index_subparsers.add_parser('status', help='Check index status')
+    index_subparsers.add_parser('status', help='Check index status')
 
     # index rebuild
     index_rebuild = index_subparsers.add_parser('rebuild', help='Rebuild indexes')
@@ -1577,7 +1577,7 @@ Examples:
     index_rebuild.add_argument('--force', action='store_true', help='Force full rebuild')
 
     # index optimize
-    index_optimize = index_subparsers.add_parser('optimize', help='Optimize indexes')
+    index_subparsers.add_parser('optimize', help='Optimize indexes')
 
     # ============================================================================
     # STATS SUBCOMMANDS
@@ -1586,14 +1586,14 @@ Examples:
     stats_subparsers = stats_parser.add_subparsers(dest='stats_action', help='Statistics actions')
 
     # stats overview
-    stats_overview = stats_subparsers.add_parser('overview', help='System overview')
+    stats_subparsers.add_parser('overview', help='System overview')
 
     # stats usage
     stats_usage = stats_subparsers.add_parser('usage', help='Usage statistics')
     stats_usage.add_argument('--days', type=int, default=30, help='Days to analyze')
 
     # stats performance
-    stats_performance = stats_subparsers.add_parser('performance', help='Performance metrics')
+    stats_subparsers.add_parser('performance', help='Performance metrics')
 
     # ============================================================================
     # MAINTENANCE SUBCOMMANDS
@@ -1602,7 +1602,7 @@ Examples:
     maintenance_subparsers = maintenance_parser.add_subparsers(dest='maintenance_action', help='Maintenance actions')
 
     # maintenance health-check
-    maintenance_health = maintenance_subparsers.add_parser('health-check', help='System health check')
+    maintenance_subparsers.add_parser('health-check', help='System health check')
 
     # Parse arguments
     args = parser.parse_args()
@@ -1763,7 +1763,7 @@ Examples:
                         # Handle bulk operation results
                         if 'uploaded' in response.data:
                             stats = response.data
-                            print_header(f"Bulk Operation Results")
+                            print_header("Bulk Operation Results")
                             print(f"Uploaded: {stats['uploaded']}")
                             print(f"Skipped: {stats['skipped']}")
                             print(f"Errors: {stats['errors']}")

@@ -8,9 +8,7 @@ import uuid
 import time
 import os
 from typing import Dict, Any, Optional
-from flask import session
 from llm.factory import create_llm_provider
-from llm.utils import build_system_prompt
 from .context_builder import ChatContextBuilder
 from .widget_logging import WidgetLogger
 
@@ -103,8 +101,6 @@ def process_widget_message(
     Returns:
         Response dict with AI response and session info
     """
-    start_time = time.time()
-
     try:
         # Validate message
         if not message or not message.strip():

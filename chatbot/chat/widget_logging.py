@@ -5,12 +5,10 @@ Handles persistent logging of widget chat interactions to database
 
 import logging
 import sqlite3
-import time
-import re
 from typing import Dict, Any, Optional, List, Tuple
 from flask import request
 from utils.database import get_db_path
-from utils.timezone_helpers import now_local, format_for_database, format_time_local
+from utils.timezone_helpers import format_for_database, format_time_local
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ ICD-10 code extraction and configurable synonym expansion for domain-specific wi
 
 import re
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 

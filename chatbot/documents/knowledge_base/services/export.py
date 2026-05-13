@@ -7,7 +7,7 @@ import os
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict
 from utils.database import get_db_connection
 from .storage import StorageService
 

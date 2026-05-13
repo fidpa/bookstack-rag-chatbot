@@ -8,15 +8,13 @@ Run this after implementing the chunking integration.
 
 import sys
 import os
-import sqlite3
 import logging
 
 # Add the chatbot directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'chatbot'))
 
-from bookstack.chunking import BookStackChunkingService, BookStackChunk
+from bookstack.chunking import BookStackChunkingService
 from bookstack.sync_service import ContentSyncService
-from bookstack.api_client import BookStackClient
 
 
 # Setup logging
@@ -96,7 +94,7 @@ def test_chunking_service():
 
     # Display chunk statistics
     stats = chunking_service.get_chunk_statistics(chunks)
-    print(f"📊 Chunk Statistics:")
+    print("📊 Chunk Statistics:")
     print(f"   - Total chunks: {stats['total_chunks']}")
     print(f"   - Average words per chunk: {stats['avg_words_per_chunk']:.1f}")
     print(f"   - Min words: {stats['min_words']}")
@@ -107,7 +105,7 @@ def test_chunking_service():
     # Display first chunk
     if chunks:
         first_chunk = chunks[0]
-        print(f"\n📝 First chunk preview:")
+        print("\n📝 First chunk preview:")
         print(f"   - Index: {first_chunk.chunk_index}")
         print(f"   - Word count: {first_chunk.word_count}")
         print(f"   - Text preview: {first_chunk.text[:200]}...")
@@ -176,7 +174,7 @@ def test_database_integration():
 
         # Get sync statistics
         stats = sync_service.get_sync_stats()
-        print(f"📊 Sync Statistics:")
+        print("📊 Sync Statistics:")
         print(f"   - Content counts: {stats['content_counts']}")
         print(f"   - Chunking enabled: {stats['chunking_enabled']}")
         if stats['chunk_stats']:
@@ -195,7 +193,7 @@ def test_database_integration():
         try:
             os.remove(db_path)
             print("🧹 Test database cleaned up")
-        except:
+        except Exception:
             pass
 
 
@@ -225,7 +223,7 @@ def test_performance():
     duration = end_time - start_time
     words_per_second = len(large_content.split()) / duration if duration > 0 else 0
 
-    print(f"✅ Performance test completed:")
+    print("✅ Performance test completed:")
     print(f"   - Content size: {len(large_content)} characters")
     print(f"   - Word count: {len(large_content.split())} words")
     print(f"   - Chunks generated: {len(chunks)}")
@@ -250,7 +248,7 @@ def main():
 
     for test_name, test_func in tests:
         try:
-            result = test_func()
+            test_func()
             results.append((test_name, True, None))
             print(f"✅ {test_name}: PASSED\n")
         except Exception as e:
@@ -265,7 +263,7 @@ def main():
     total = len(results)
 
     for test_name, success, error in results:
-        status = "✅ PASSED" if success else f"❌ FAILED"
+        status = "✅ PASSED" if success else "❌ FAILED"
         print(f"{test_name}: {status}")
         if error:
             print(f"   Error: {error}")

@@ -4,15 +4,12 @@ Integriert die Wissensbasis in den Chat-Kontext
 """
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict
 
-from utils.database import get_db_connection
 from .search import SearchService
 from .indexing import IndexingService
-from .hybrid_search import HybridSearchService
 from .strategies.chunk_strategy import ChunkSelectionStrategy
 from .strategies.document_strategy import DocumentSelectionStrategy
-from ..models import KnowledgeDocument
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +54,9 @@ class ContextService:
             
             # Handle both return formats
             if len(search_result) == 3:
-                documents, total_count, search_info = search_result
+                documents, total_count, _ = search_result
             else:
                 documents, total_count = search_result
-                search_info = {}
             
             logger.info(f"Hybrid search returned {len(documents) if documents else 0} documents (total: {total_count}) for query: {user_query}")
             
