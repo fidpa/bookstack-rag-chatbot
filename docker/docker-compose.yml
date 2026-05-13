@@ -1,0 +1,146 @@
+# BookStack RAG Chatbot — Docker Compose Stack
+#
+# Services:
+#   bookstack     : Wiki frontend (LinuxServer.io image, port 6875)
+#   bookstack_db  : MariaDB backend for BookStack
+#   chatbot       : Flask-based RAG backend (port 8888)
+#
+# Start: docker compose -f docker/docker-compose.yml up -d
+# Logs : docker compose -f docker/docker-compose.yml logs -f
+# Stop : docker compose -f docker/docker-compose.yml down
+
+services:
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:25.07
+    container_name: bookstack
+    ports:
+      - "${BOOKSTACK_PORT:-6875}:80"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+      - APP_URL=${BOOKSTACK_EXTERNAL_URL:-http://localhost:6875}
+      - DB_HOST=bookstack_db
+      - DB_DATABASE=bookstackapp
+      - DB_USERNAME=bookstack
+      - DB_PASSWORD=${BOOKSTACK_DB_PASSWORD}
+      - APP_KEY=${BOOKSTACK_APP_KEY}
+      - AUTH_METHOD=standard
+      - REGISTRATION_ENABLED=false
+      - API_AUTHENTICATION_ENABLED=true
+    volumes:
+      - bookstack_data:/config
+    depends_on:
+      - bookstack_db
+    restart: unless-stopped
+    networks:
+      - bookstack-network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+  bookstack_db:
+    image: lscr.io/linuxserver/mariadb:11.5
+    container_name: bookstack_db
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=bookstackapp
+      - MYSQL_USER=bookstack
+      - MYSQL_PASSWORD=${BOOKSTACK_DB_PASSWORD}
+    volumes:
+      - mariadb_data:/config
+    restart: unless-stopped
+    networks:
+      - bookstack-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+  chatbot:
+    build:
+      context: ../chatbot
+      dockerfile: Dockerfile
+    container_name: chatbot
+    user: "1000:1000"
+    ports:
+      - "${CHATBOT_PORT:-8888}:8888"
+    networks:
+      - bookstack-network
+    volumes:
+      - chatbot_data:/app/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    environment:
+      - TZ=${TZ:-UTC}
+
+      # Core
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - FLASK_DEBUG=${FLASK_DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # LLM Providers (configure at least one)
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2025-01-01-preview}
+      - AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4o-mini}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - ENABLE_OLLAMA_FALLBACK=${ENABLE_OLLAMA_FALLBACK:-false}
+
+      # BookStack integration (over Docker bridge network)
+      - BOOKSTACK_API_URL=http://bookstack:80
+      - BOOKSTACK_EXTERNAL_URL=${BOOKSTACK_EXTERNAL_URL:-http://localhost:6875}
+      - BOOKSTACK_TOKEN_ID=${BOOKSTACK_TOKEN_ID}
+      - BOOKSTACK_TOKEN_SECRET=${BOOKSTACK_TOKEN_SECRET}
+      - BOOKSTACK_WEBHOOK_SECRET=${BOOKSTACK_WEBHOOK_SECRET:-}
+
+      # Chatbot behaviour
+      - CHATBOT_SYSTEM_PROMPT=${CHATBOT_SYSTEM_PROMPT:-}
+
+      # Access control
+      - ALLOWED_VPN_IPS=${ALLOWED_VPN_IPS:-}
+      - IP_ACCESS_CONTROL=${IP_ACCESS_CONTROL:-true}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
+
+      # Database
+      - DATABASE_PATH=/app/data/chatbot.db
+    depends_on:
+      bookstack:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    # Allow reaching a host-side Ollama instance when ENABLE_OLLAMA_FALLBACK=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  bookstack-network:
+    driver: bridge
+
+volumes:
+  bookstack_data:
+  mariadb_data:
+  chatbot_data:

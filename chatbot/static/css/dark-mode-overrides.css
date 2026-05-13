@@ -1,0 +1,170 @@
+/* KnowledgeBot - Dark Mode Overrides
+   This file contains all dark mode specific overrides and should be loaded LAST
+   to ensure proper specificity over Bootstrap and other styles */
+
+/* ============================================
+   Critical HTML/Body Coverage
+   ============================================ */
+
+/* Ensure full viewport is dark */
+[data-theme="dark"], [data-theme="dark"] html {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+}
+
+/* ============================================
+   Bootstrap Text Color Fixes
+   ============================================ */
+
+/* Force text visibility on all elements */
+[data-theme="dark"] body,
+[data-theme="dark"] body * {
+    color: var(--text-color);
+}
+
+/* Bootstrap text utilities */
+[data-theme="dark"] .text-primary { color: var(--primary-color) !important; }
+[data-theme="dark"] .text-secondary, [data-theme="dark"] .text-muted { color: var(--text-muted) !important; }
+[data-theme="dark"] .text-success { color: var(--success-color) !important; }
+[data-theme="dark"] .text-danger { color: var(--danger-color) !important; }
+[data-theme="dark"] .text-warning { color: var(--warning-color) !important; }
+[data-theme="dark"] .text-info { color: var(--info-color) !important; }
+[data-theme="dark"] .text-light, [data-theme="dark"] .text-dark, [data-theme="dark"] .text-body { color: var(--text-color) !important; }
+
+/* ============================================
+   Bootstrap Component Overrides
+   ============================================ */
+
+/* Cards */
+[data-theme="dark"] .card, [data-theme="dark"] .card * { color: var(--text-color); }
+[data-theme="dark"] .card { background-color: #242424 !important; border-color: var(--border-color) !important; }
+[data-theme="dark"] .card-header,
+[data-theme="dark"] .card-footer { background-color: #2d2d2d !important; border-color: var(--border-color) !important; }
+
+/* Forms */
+[data-theme="dark"] .form-control,
+[data-theme="dark"] .form-select,
+[data-theme="dark"] .custom-select,
+[data-theme="dark"] input[type="text"],
+[data-theme="dark"] input[type="email"],
+[data-theme="dark"] input[type="password"],
+[data-theme="dark"] input[type="search"],
+[data-theme="dark"] textarea,
+[data-theme="dark"] select {
+    background-color: #2d2d2d !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-color) !important;
+}
+
+[data-theme="dark"] .form-control:focus,
+[data-theme="dark"] .form-select:focus,
+[data-theme="dark"] .custom-select:focus {
+    background-color: #2d2d2d !important;
+    border-color: var(--primary-color) !important;
+    color: var(--text-color) !important;
+    box-shadow: 0 0 0 0.2rem rgba(var(--primary-rgb), 0.25) !important;
+}
+
+/* Dropdowns */
+[data-theme="dark"] .dropdown-menu { background-color: #242424 !important; border-color: var(--border-color) !important; }
+[data-theme="dark"] .dropdown-item { color: var(--text-color) !important; }
+[data-theme="dark"] .dropdown-item:hover,
+[data-theme="dark"] .dropdown-item:focus { background-color: #2d2d2d !important; color: var(--text-color) !important; }
+
+/* Tables */
+[data-theme="dark"] table, [data-theme="dark"] .table { color: var(--text-color) !important; }
+[data-theme="dark"] .table thead th { border-color: var(--border-color) !important; color: var(--text-color) !important; }
+[data-theme="dark"] .table td, [data-theme="dark"] .table th { border-color: var(--border-color) !important; }
+
+/* List Groups & Badges */
+[data-theme="dark"] .list-group-item { background-color: #242424 !important; border-color: var(--border-color) !important; color: var(--text-color) !important; }
+[data-theme="dark"] .badge { color: #fff !important; }
+[data-theme="dark"] .badge-light { background-color: #6c757d !important; color: #fff !important; }
+[data-theme="dark"] .alert { color: var(--text-color) !important; }
+
+/* ============================================
+   Specific Component Fixes
+   ============================================ */
+
+/* Navigation & Links */
+[data-theme="dark"] .navbar, [data-theme="dark"] .navbar * { color: var(--text-color); }
+[data-theme="dark"] a:not(.btn) { color: var(--primary-color); }
+[data-theme="dark"] a:not(.btn):hover { color: var(--primary-hover); }
+
+/* Buttons - ensure text is visible */
+[data-theme="dark"] .btn { color: inherit; }
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .btn-success,
+[data-theme="dark"] .btn-danger,
+[data-theme="dark"] .btn-warning,
+[data-theme="dark"] .btn-info,
+[data-theme="dark"] .btn-secondary,
+[data-theme="dark"] .btn-dark { color: #fff !important; }
+[data-theme="dark"] .btn-light { background-color: #f8f9fa !important; color: #212529 !important; }
+
+/* ============================================
+   Utility Overrides
+   ============================================ */
+
+/* Background utilities */
+[data-theme="dark"] .bg-light { background-color: #242424 !important; }
+[data-theme="dark"] .bg-white { background-color: var(--bg-color) !important; }
+[data-theme="dark"] .bg-dark { background-color: #0d0d0d !important; }
+
+/* Border utilities */
+[data-theme="dark"] .border { border-color: var(--border-color) !important; }
+[data-theme="dark"] .border-top { border-top-color: var(--border-color) !important; }
+[data-theme="dark"] .border-bottom { border-bottom-color: var(--border-color) !important; }
+[data-theme="dark"] .border-left { border-left-color: var(--border-color) !important; }
+[data-theme="dark"] .border-right { border-right-color: var(--border-color) !important; }
+
+/* ============================================
+   High Specificity Overrides for Edge Cases
+   ============================================ */
+
+/* Ensure all text is visible */
+[data-theme="dark"] p, [data-theme="dark"] span, [data-theme="dark"] div,
+[data-theme="dark"] li, [data-theme="dark"] h1, [data-theme="dark"] h2,
+[data-theme="dark"] h3, [data-theme="dark"] h4, [data-theme="dark"] h5,
+[data-theme="dark"] h6, [data-theme="dark"] label, [data-theme="dark"] small,
+[data-theme="dark"] .small {
+    color: var(--text-color);
+}
+
+/* Modal fixes */
+[data-theme="dark"] .modal-content, [data-theme="dark"] .modal-content * { color: var(--text-color); }
+[data-theme="dark"] .modal-content { background-color: #242424 !important; }
+[data-theme="dark"] .modal-header,
+[data-theme="dark"] .modal-footer { border-color: var(--border-color) !important; }
+
+/* Pagination & Progress */
+[data-theme="dark"] .page-link { background-color: #242424 !important; border-color: var(--border-color) !important; color: var(--text-color) !important; }
+[data-theme="dark"] .page-item.active .page-link { background-color: var(--primary-color) !important; border-color: var(--primary-color) !important; color: #fff !important; }
+[data-theme="dark"] .progress { background-color: #2d2d2d !important; }
+
+/* Custom scrollbar for dark mode */
+[data-theme="dark"] ::-webkit-scrollbar {
+    background-color: #1a1a1a;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+    background-color: #4a4a4a;
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+    background-color: #5a5a5a;
+}
+
+/* ============================================
+   Final catch-all for text visibility
+   ============================================ */
+
+/* Force inherit color on all nested elements */
+[data-theme="dark"] * {
+    color: inherit;
+}
+
+/* Then set specific colors where needed */
+[data-theme="dark"] body {
+    color: var(--text-color) !important;
+}

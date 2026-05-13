@@ -1,0 +1,43 @@
+/* KnowledgeBot - Chat Input Components */
+
+/* Chat Input */
+.chat-input-area {
+    padding: var(--spacing);
+    border-top: 1px solid var(--border-color);
+    background-color: var(--bg-light);
+}
+
+/* Dark mode input area */
+[data-theme="dark"] .chat-input-area {
+    background-color: #242424;
+}
+
+.chat-form {
+    width: 100%;
+}
+
+.input-group {
+    display: flex;
+    gap: var(--spacing-sm);
+    align-items: flex-end;
+}
+
+.message-input {
+    flex: 1;
+    min-height: 40px;
+    max-height: 120px;
+    resize: none;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+
+.send-btn {
+    padding: 0.5rem 1rem;
+    border-radius: var(--border-radius);
+}
+
+.chat-hints {
+    margin-top: var(--spacing-sm);
+    text-align: center;
+    color: var(--text-muted);
+}

@@ -1,0 +1,176 @@
+/* KnowledgeBot - Typography Styles */
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text-color);
+}
+
+h1 {
+    font-size: 2.5rem;
+    margin-bottom: var(--spacing-lg);
+}
+
+h2 {
+    font-size: 2rem;
+    margin-bottom: var(--spacing);
+}
+
+h3 {
+    font-size: 1.5rem;
+    margin-bottom: var(--spacing);
+}
+
+h4 {
+    font-size: 1.25rem;
+    margin-bottom: var(--spacing-sm);
+}
+
+h5 {
+    font-size: 1.125rem;
+    margin-bottom: var(--spacing-sm);
+}
+
+h6 {
+    font-size: 1rem;
+    margin-bottom: var(--spacing-sm);
+}
+
+/* Paragraphs */
+p {
+    margin-bottom: var(--spacing);
+    color: var(--text-color);
+}
+
+p:last-child {
+    margin-bottom: 0;
+}
+
+/* Links */
+a {
+    color: var(--primary-color);
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+a:hover {
+    color: var(--primary-hover);
+    text-decoration: underline;
+}
+
+/* Text utilities */
+.text-muted {
+    color: var(--text-muted);
+}
+
+.text-primary {
+    color: var(--primary-color);
+}
+
+.text-success {
+    color: var(--success-color);
+}
+
+.text-danger {
+    color: var(--danger-color);
+}
+
+.text-warning {
+    color: var(--warning-color);
+}
+
+.text-center {
+    text-align: center;
+}
+
+.text-right {
+    text-align: right;
+}
+
+.text-left {
+    text-align: left;
+}
+
+/* Font weights */
+.font-normal {
+    font-weight: 400;
+}
+
+.font-medium {
+    font-weight: 500;
+}
+
+.font-semibold {
+    font-weight: 600;
+}
+
+.font-bold {
+    font-weight: 700;
+}
+
+/* Font sizes */
+.text-sm {
+    font-size: 0.875rem;
+}
+
+.text-lg {
+    font-size: 1.125rem;
+}
+
+.text-xl {
+    font-size: 1.25rem;
+}
+
+/* Code & Pre */
+code {
+    font-family: 'Courier New', Courier, monospace;
+    background-color: var(--bg-light);
+    padding: 0.125rem 0.25rem;
+    border-radius: 0.25rem;
+    font-size: 0.875em;
+    color: var(--text-color);
+}
+
+pre {
+    font-family: 'Courier New', Courier, monospace;
+    background-color: var(--bg-light);
+    padding: var(--spacing);
+    border-radius: var(--border-radius);
+    overflow-x: auto;
+    margin-bottom: var(--spacing);
+    color: var(--text-color);
+}
+
+pre code {
+    background: none;
+    padding: 0;
+}
+
+/* Dark mode code styling */
+[data-theme="dark"] code {
+    background-color: #3d3d3d;
+}
+
+[data-theme="dark"] pre {
+    background-color: #2d2d2d;
+}
+
+/* Lists in content */
+.content ul,
+.content ol {
+    margin-bottom: var(--spacing);
+    padding-left: var(--spacing-lg);
+}
+
+.content ul {
+    list-style-type: disc;
+}
+
+.content ol {
+    list-style-type: decimal;
+}
+
+.content li {
+    margin-bottom: var(--spacing-sm);
+}

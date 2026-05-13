@@ -1,0 +1,127 @@
+/* KnowledgeBot - Chat Document Upload Components */
+
+/* Document Upload Styles */
+.upload-btn {
+    padding: 0.5rem 0.75rem;
+    margin-right: var(--spacing-sm);
+}
+
+.document-area {
+    margin-bottom: var(--spacing);
+    padding: var(--spacing);
+    background-color: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+}
+
+.document-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-sm);
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+.document-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
+}
+
+.document-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: 0.5rem 0.75rem;
+    background-color: var(--bg-light);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: 0.875rem;
+}
+
+/* Dark mode document item */
+[data-theme="dark"] .document-item {
+    background-color: #242424;
+}
+
+.document-item i {
+    color: var(--primary-color);
+}
+
+.doc-name {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.doc-size {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.delete-doc {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0.25rem;
+    transition: color 0.2s;
+}
+
+.delete-doc:hover {
+    color: var(--danger-color);
+}
+
+.upload-progress {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: 0.5rem 0.75rem;
+    background-color: var(--bg-light);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+/* Drag and Drop Styles */
+.chat-messages.drag-over {
+    background-color: rgba(var(--primary-rgb), 0.1);
+    border: 2px dashed var(--primary-color);
+    position: relative;
+}
+
+.chat-messages.drag-over::after {
+    content: "Dateien hier ablegen";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.25rem;
+    color: var(--primary-color);
+    background-color: rgba(255, 255, 255, 0.9);
+    padding: var(--spacing) var(--spacing-lg);
+    border-radius: var(--border-radius);
+    border: 2px solid var(--primary-color);
+    pointer-events: none;
+}
+
+/* Dark mode drag-drop overlay */
+[data-theme="dark"] .chat-messages.drag-over::after {
+    background-color: rgba(26, 26, 26, 0.95);
+    color: var(--primary-color);
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+    .document-item {
+        flex-direction: column;
+        text-align: center;
+    }
+    
+    .doc-name {
+        max-width: 100px;
+    }
+}

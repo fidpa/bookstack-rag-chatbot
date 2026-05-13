@@ -1,0 +1,111 @@
+/* KnowledgeBot - Chat Messages Components */
+
+/* Messages Area */
+.chat-messages {
+    flex: 1;
+    padding: var(--spacing);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing);
+}
+
+.message {
+    display: flex;
+    gap: var(--spacing);
+    animation: fadeIn 0.3s ease-in;
+}
+
+.message-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background-color: var(--bg-light);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.message-avatar i {
+    font-size: 1.25rem;
+    color: var(--text-muted);
+}
+
+.message-user .message-avatar {
+    background-color: var(--primary-color);
+}
+
+.message-user .message-avatar i {
+    color: white;
+}
+
+.message-content {
+    flex: 1;
+    max-width: 80%;
+}
+
+.message-text {
+    background-color: var(--bg-light);
+    padding: var(--spacing);
+    border-radius: var(--border-radius);
+    line-height: 1.6;
+    white-space: pre-wrap;
+}
+
+.message-user .message-text {
+    background-color: var(--bg-secondary); /* Gleicher Hintergrund wie Assistant */
+    color: var(--text-primary);
+}
+
+.message.error .message-text {
+    background-color: rgba(220, 53, 69, 0.1);
+    border: 1px solid var(--danger-color);
+    color: var(--danger-color);
+}
+
+/* Dark mode message adjustments */
+[data-theme="dark"] .message-text {
+    background-color: #242424;
+}
+
+[data-theme="dark"] .message-avatar {
+    background-color: #2d2d2d;
+}
+
+/* Typing Indicator */
+.typing-indicator {
+    display: flex;
+    gap: 4px;
+}
+
+.typing-indicator span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-muted);
+    animation: typing 1.4s infinite;
+}
+
+.typing-indicator span:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.typing-indicator span:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+/* Animations */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+@keyframes typing {
+    0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+    30% { opacity: 1; transform: scale(1); }
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+    .message-content {
+        max-width: 90%;
+    }
+}

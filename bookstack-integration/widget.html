@@ -1,0 +1,712 @@
+<!-- BookStack RAG Chatbot — embedded chat widget -->
+<style id="knowledgebot-widget-styles">
+/* Chat Widget Button */
+.kb-chat-button {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, #206ea7 0%, #1b5a8c 100%);
+    border-radius: 50%;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    cursor: pointer;
+    z-index: 9998;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.3s ease;
+    will-change: transform;
+}
+
+.kb-chat-button:hover {
+    transform: scale(1.1);
+}
+
+.kb-chat-button svg {
+    width: 30px;
+    height: 30px;
+    fill: white;
+}
+
+/* Lazy load the rest of styles only when widget is activated */
+</style>
+
+<script>
+(function() {
+    // Embedded chat widget for BookStack pages.
+
+    // Smart API URL detection for localhost and production (HTTPS)
+    const getApiUrl = function() {
+        const protocol = window.location.protocol;
+        const hostname = window.location.hostname;
+
+        // Development: Use localhost with port 8888
+        if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+            const url = `http://${hostname}:8888/chat/api/widget`;
+            console.log('[Widget] Development mode - API URL:', url);
+            return url;
+        }
+
+        // Production: Use current origin (HTTPS via nginx proxy, no port)
+        // nginx proxies /chat/api/ to chatbot:8888
+        const url = `${protocol}//${hostname}/chat/api/widget`;
+        console.log('[Widget] Production mode - API URL:', url);
+        return url;
+    };
+
+    window.KnowledgeBotChat = {
+        // Dynamic API URL detection (localhost vs. production)
+        apiUrl: getApiUrl(),
+        sessionId: null,
+        isOpen: false,
+        widgetLoaded: false,
+        messageQueue: [],
+        retryCount: 0,
+        maxRetries: 3,
+
+        init: function() {
+
+            // Only create the button initially (lazy loading)
+            this.createButton();
+
+            // Get or create session ID
+            this.sessionId = sessionStorage.getItem('knowledgebot-widget-session');
+            if (!this.sessionId) {
+                this.sessionId = 'widget-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+                sessionStorage.setItem('knowledgebot-widget-session', this.sessionId);
+            }
+
+            // Preload widget resources in background after 2 seconds
+            setTimeout(() => this.preloadResources(), 2000);
+
+            // Quick connectivity test (with logging)
+            setTimeout(() => this.testConnectivity(), 3000);
+        },
+
+        testConnectivity: function() {
+            // Silent connectivity test - only log errors
+            fetch(this.apiUrl.replace('/widget', '/echo'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Widget-Session': this.sessionId || 'test'
+                },
+                body: JSON.stringify({ message: 'connectivity test' })
+            })
+            .catch(error => {
+                console.error('Widget: Connectivity test failed:', error);
+            });
+        },
+
+        createButton: function() {
+            const button = document.createElement('div');
+            button.className = 'kb-chat-button';
+            button.id = 'kbChatButton';
+            button.title = 'Open chatbot';
+            button.innerHTML = `
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/>
+                    <circle cx="12" cy="8" r="1"/>
+                    <circle cx="8" cy="8" r="1"/>
+                    <circle cx="16" cy="8" r="1"/>
+                </svg>
+            `;
+
+            button.addEventListener('click', () => this.handleButtonClick());
+            document.body.appendChild(button);
+        },
+
+        handleButtonClick: function() {
+            if (!this.widgetLoaded) {
+                this.loadWidget(() => this.toggleWidget());
+            } else {
+                this.toggleWidget();
+            }
+        },
+
+        preloadResources: function() {
+            // Preconnect to API endpoint for faster responses
+            const link = document.createElement('link');
+            link.rel = 'preconnect';
+            link.href = this.apiUrl.replace('/chat/api/widget', '');
+            document.head.appendChild(link);
+        },
+
+        loadWidget: function(callback) {
+            // Load full widget styles
+            this.loadWidgetStyles();
+
+            // Create widget HTML
+            this.createWidget();
+
+            // Attach events
+            this.attachEvents();
+
+            this.widgetLoaded = true;
+
+            if (callback) callback();
+        },
+
+        loadWidgetStyles: function() {
+            const styles = `
+                /* Chat Widget Container */
+                .kb-chat-widget {
+                    position: fixed;
+                    bottom: 90px;
+                    right: 20px;
+                    width: 380px;
+                    height: 600px;
+                    background: white;
+                    border-radius: 12px;
+                    box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+                    z-index: 9997;
+                    display: none;
+                    flex-direction: column;
+                    overflow: hidden;
+                    will-change: transform;
+                    contain: layout style paint;
+                }
+
+                .kb-chat-widget.active {
+                    display: flex;
+                    animation: slideIn 0.3s ease-out;
+                }
+
+                @keyframes slideIn {
+                    from {
+                        transform: translateY(20px);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateY(0);
+                        opacity: 1;
+                    }
+                }
+
+                /* Widget Header */
+                .kb-chat-header {
+                    background: linear-gradient(135deg, #206ea7 0%, #1b5a8c 100%);
+                    color: white;
+                    padding: 15px;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                }
+
+                .kb-chat-header h3 {
+                    margin: 0;
+                    font-size: 18px;
+                }
+
+                .kb-chat-close {
+                    background: none;
+                    border: none;
+                    color: white;
+                    font-size: 24px;
+                    cursor: pointer;
+                    padding: 0;
+                    width: 30px;
+                    height: 30px;
+                }
+
+                /* Chat Messages Area */
+                .kb-chat-messages {
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 20px;
+                    background: #fafafa;
+                    scroll-behavior: smooth;
+                }
+
+                .knowledgebot-message {
+                    margin-bottom: 15px;
+                    display: flex;
+                    gap: 10px;
+                    animation: fadeIn 0.3s ease-out;
+                }
+
+                @keyframes fadeIn {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+
+                .knowledgebot-message.user {
+                    justify-content: flex-end;
+                }
+
+                .knowledgebot-message-content {
+                    max-width: 70%;
+                    padding: 10px 15px;
+                    border-radius: 12px;
+                    word-wrap: break-word;
+                    white-space: pre-wrap;
+                }
+
+                .knowledgebot-message.ai .knowledgebot-message-content {
+                    background: white;
+                    border: 1px solid #e0e0e0;
+                    color: #333;
+                }
+
+                .knowledgebot-message.user .knowledgebot-message-content {
+                    background: linear-gradient(135deg, #206ea7 0%, #1b5a8c 100%);
+                    color: white;
+                }
+
+                /* Input Area */
+                .kb-chat-input-container {
+                    padding: 15px;
+                    background: white;
+                    border-top: 1px solid #e0e0e0;
+                }
+
+                .kb-chat-input-wrapper {
+                    display: flex;
+                    gap: 10px;
+                }
+
+                .kb-chat-input {
+                    flex: 1;
+                    padding: 10px 15px;
+                    border: 1px solid #ddd;
+                    border-radius: 25px;
+                    font-size: 14px;
+                    outline: none;
+                    transition: border-color 0.3s;
+                }
+
+                .kb-chat-input:focus {
+                    border-color: #206ea7;
+                }
+
+                .knowledgebot-send-button {
+                    background: linear-gradient(135deg, #206ea7 0%, #1b5a8c 100%);
+                    color: white;
+                    border: none;
+                    border-radius: 50%;
+                    width: 40px;
+                    height: 40px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    transition: transform 0.2s;
+                }
+
+                .knowledgebot-send-button:hover:not(:disabled) {
+                    transform: scale(1.1);
+                }
+
+                .knowledgebot-send-button:disabled {
+                    opacity: 0.5;
+                    cursor: not-allowed;
+                }
+
+                /* Typing Indicator */
+                .knowledgebot-typing-indicator {
+                    display: none;
+                    padding: 10px 15px;
+                    background: white;
+                    border: 1px solid #e0e0e0;
+                    border-radius: 12px;
+                    width: fit-content;
+                    margin-bottom: 15px;
+                }
+
+                .knowledgebot-typing-indicator.active {
+                    display: flex;
+                    gap: 4px;
+                }
+
+                .knowledgebot-typing-dot {
+                    width: 8px;
+                    height: 8px;
+                    background: #999;
+                    border-radius: 50%;
+                    animation: typing 1.4s infinite;
+                }
+
+                .knowledgebot-typing-dot:nth-child(2) {
+                    animation-delay: 0.2s;
+                }
+
+                .knowledgebot-typing-dot:nth-child(3) {
+                    animation-delay: 0.4s;
+                }
+
+                @keyframes typing {
+                    0%, 60%, 100% {
+                        transform: translateY(0);
+                        opacity: 0.5;
+                    }
+                    30% {
+                        transform: translateY(-10px);
+                        opacity: 1;
+                    }
+                }
+
+                /* Mobile Responsive */
+                @media (max-width: 480px) {
+                    .kb-chat-widget {
+                        width: 100%;
+                        height: 100%;
+                        bottom: 0;
+                        right: 0;
+                        border-radius: 0;
+                    }
+
+                    .kb-chat-button {
+                        bottom: 10px;
+                        right: 10px;
+                    }
+                }
+            `;
+
+            const styleSheet = document.getElementById('knowledgebot-widget-styles');
+            styleSheet.innerHTML += styles;
+        },
+
+        createWidget: function() {
+            const widget = document.createElement('div');
+            widget.className = 'kb-chat-widget';
+            widget.id = 'kbChatWidget';
+
+            const currentUrl = new URL(window.location.href);
+            const apiUrl = new URL(this.apiUrl);
+            const sameOrigin = currentUrl.origin === apiUrl.origin.replace(':8888', ':' + currentUrl.port);
+
+            widget.innerHTML = `
+                <div class="kb-chat-header">
+                    <h3>🤖 Chatbot</h3>
+                    <button class="kb-chat-close" id="kbChatClose" aria-label="Close">&times;</button>
+                </div>
+                <div class="kb-chat-messages" id="kbChatMessages">
+                    <div style="text-align: center; padding: 40px 20px; color: #666;">
+                        <h3 style="color: #1b5a8c; margin-bottom: 10px;">Welcome!</h3>
+                        <p>I'm your AI assistant for the knowledge base.</p>
+                        <p>Ask me about anything in the wiki.</p>
+                    </div>
+                </div>
+                <div class="knowledgebot-typing-indicator" id="kbTypingIndicator">
+                    <div class="knowledgebot-typing-dot"></div>
+                    <div class="knowledgebot-typing-dot"></div>
+                    <div class="knowledgebot-typing-dot"></div>
+                </div>
+                <div class="kb-chat-input-container">
+                    <div class="kb-chat-input-wrapper">
+                        <input
+                            type="text"
+                            class="kb-chat-input"
+                            id="kbChatInput"
+                            placeholder="Type your question..."
+                            autocomplete="off"
+                        >
+                        <button class="knowledgebot-send-button" id="kbSendButton">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(widget);
+        },
+
+        attachEvents: function() {
+            const self = this;
+            const closeBtn = document.getElementById('kbChatClose');
+            const input = document.getElementById('kbChatInput');
+            const sendBtn = document.getElementById('kbSendButton');
+
+            // Close widget
+            closeBtn.addEventListener('click', function() {
+                self.closeWidget();
+            });
+
+            // Send message on button click
+            sendBtn.addEventListener('click', function() {
+                self.sendMessage();
+            });
+
+            // Send message on Enter
+            input.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    self.sendMessage();
+                }
+            });
+
+            // Enable/disable send button
+            input.addEventListener('input', function() {
+                sendBtn.disabled = !this.value.trim();
+            });
+
+            // Initial state
+            sendBtn.disabled = true;
+        },
+
+        toggleWidget: function() {
+            const widget = document.getElementById('kbChatWidget');
+            this.isOpen = !this.isOpen;
+
+            if (this.isOpen) {
+                widget.classList.add('active');
+                document.getElementById('kbChatInput').focus();
+            } else {
+                widget.classList.remove('active');
+            }
+        },
+
+        closeWidget: function() {
+            const widget = document.getElementById('kbChatWidget');
+            widget.classList.remove('active');
+            this.isOpen = false;
+        },
+
+
+        addMessage: function(content, isUser) {
+            const messagesContainer = document.getElementById('kbChatMessages');
+
+            // Remove welcome message if it exists
+            const welcomeMsg = messagesContainer.querySelector('div[style*="text-align: center"]');
+            if (welcomeMsg) {
+                welcomeMsg.remove();
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `knowledgebot-message ${isUser ? 'user' : 'ai'}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'knowledgebot-message-content';
+            contentDiv.textContent = content;
+
+            messageDiv.appendChild(contentDiv);
+            messagesContainer.appendChild(messageDiv);
+
+            // Smooth scroll to bottom
+            requestAnimationFrame(() => {
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            });
+        },
+
+        showTyping: function() {
+            const indicator = document.getElementById('kbTypingIndicator');
+            const messagesContainer = document.getElementById('kbChatMessages');
+            indicator.classList.add('active');
+            messagesContainer.appendChild(indicator);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        },
+
+        hideTyping: function() {
+            const indicator = document.getElementById('kbTypingIndicator');
+            indicator.classList.remove('active');
+        },
+
+        getEnhancedBookStackContext: function() {
+            try {
+                const context = {
+                    url: window.location.href,
+                    title: document.title,
+                    breadcrumbs: [],
+                    content_type: null,
+                    book_name: null,
+                    chapter_name: null,
+                    page_content: null
+                };
+
+                // Extract breadcrumbs with better selectors
+                const breadcrumbSelectors = [
+                    '.breadcrumb a',               // Bootstrap breadcrumb
+                    '.page-breadcrumb a',          // BookStack spezifisch
+                    'nav[aria-label="breadcrumb"] a', // ARIA standard
+                    '.entity-breadcrumbs a',       // BookStack entities
+                    '.breadcrumbs a',              // Alternative
+                    'ol.breadcrumb a',             // Ordered list
+                    '.nav-breadcrumb a',           // Navigation
+                    '.content-header .breadcrumb a' // Content header
+                ];
+
+                let breadcrumbElements = [];
+
+                // Versuche verschiedene Selektoren
+                for (const selector of breadcrumbSelectors) {
+                    breadcrumbElements = document.querySelectorAll(selector);
+                    if (breadcrumbElements.length > 0) {
+                        console.log('[Widget] Breadcrumbs found with selector:', selector);
+                        break;
+                    }
+                }
+
+                if (breadcrumbElements.length > 0) {
+                    context.breadcrumbs = Array.from(breadcrumbElements).map(link => link.textContent.trim()).filter(text => text);
+                } else {
+                    // Fallback: also try span elements for unlinked breadcrumbs
+                    const fallbackSelector = '.breadcrumb, nav[aria-label="breadcrumb"], .page-breadcrumbs';
+                    const breadcrumbNav = document.querySelector(fallbackSelector);
+                    if (breadcrumbNav) {
+                        const links = breadcrumbNav.querySelectorAll('a, span, li');
+                        context.breadcrumbs = Array.from(links).map(link => link.textContent.trim()).filter(text => text && text !== '/' && text !== '>');
+                        if (context.breadcrumbs.length > 0) {
+                            console.log('[Widget] Breadcrumbs (fallback) found:', context.breadcrumbs);
+                        }
+                    }
+                }
+
+                if (context.breadcrumbs.length === 0) {
+                    console.log('[Widget] Warning: no breadcrumbs found');
+                }
+
+                // Determine content type from URL and page structure
+                const url = window.location.pathname;
+                if (url.includes('/books/')) {
+                    if (url.match(/\/books\/[^\/]+\/page\/[^\/]+/)) {
+                        context.content_type = 'page';
+
+                        // Extract page content for better context
+                        const contentSelectors = [
+                            '.page-content',           // BookStack Standard
+                            '[data-page-content]',     // Fallback
+                            '.entity-content',         // Alternative
+                            'main .content',          // Generisch
+                            '.chapter-content',       // Kapitel
+                            'article',                // HTML5 Standard
+                            '.wiki-content',          // Wiki-Fallback
+                            '.content-wrap',          // BookStack wrapper
+                            '#page-content'           // ID-basiert
+                        ];
+
+                        let pageContent = null;
+                        let usedSelector = null;
+
+                        // Versuche alle Selektoren bis einer funktioniert
+                        for (const selector of contentSelectors) {
+                            pageContent = document.querySelector(selector);
+                            if (pageContent && pageContent.textContent.trim().length > 50) {
+                                usedSelector = selector;
+                                break;
+                            }
+                        }
+
+                        if (pageContent) {
+                            // Get first 20000 characters of page content (realistic size for full BookStack pages)
+                            const textContent = pageContent.textContent.trim();
+                            context.page_content = textContent.substring(0, 20000) + (textContent.length > 20000 ? '...' : '');
+                            console.log('[Widget] Page content extracted with selector:', usedSelector);
+                            console.log('[Widget] Content (first 200 chars):', textContent.substring(0, 200));
+                        } else {
+                            console.log('[Widget] Warning: page content could not be extracted');
+                        }
+
+                        // Try to extract book and chapter from breadcrumbs
+                        if (context.breadcrumbs.length >= 2) {
+                            context.book_name = context.breadcrumbs[context.breadcrumbs.length - 2];
+                        }
+                        if (context.breadcrumbs.length >= 3) {
+                            context.chapter_name = context.breadcrumbs[context.breadcrumbs.length - 3];
+                        }
+                    } else if (url.match(/\/books\/[^\/]+\/chapter\/[^\/]+/)) {
+                        context.content_type = 'chapter';
+                        if (context.breadcrumbs.length >= 2) {
+                            context.book_name = context.breadcrumbs[context.breadcrumbs.length - 2];
+                        }
+                    } else if (url.match(/\/books\/[^\/]+$/)) {
+                        context.content_type = 'book';
+                    }
+                }
+
+                console.log('[Widget] BookStack Context:', context);
+                console.log('[Widget] URL analysis:', {
+                    'pathname': url,
+                    'includes_books': url.includes('/books/'),
+                    'page_match': url.match(/\/books\/\d+\/page\/\d+/),
+                    'chapter_match': url.match(/\/books\/\d+\/chapter\/\d+/),
+                    'book_match': url.match(/\/books\/\d+/)
+                });
+                return context;
+            } catch (error) {
+                console.error('[Widget] Error extracting BookStack context:', error);
+                return {
+                    url: window.location.href,
+                    title: document.title
+                };
+            }
+        },
+
+        sendMessage: async function() {
+            const input = document.getElementById('kbChatInput');
+            const sendBtn = document.getElementById('kbSendButton');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // Add user message (clean, without context info)
+            this.addMessage(message, true);
+
+            // Get BookStack context for API request
+            const bookstackContext = this.getEnhancedBookStackContext();
+
+            // Clear input and disable button
+            input.value = '';
+            sendBtn.disabled = true;
+
+            // Show typing indicator
+            this.showTyping();
+
+            try {
+                const response = await fetch(this.apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Widget-Session': this.sessionId
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        bookstack_context: bookstackContext
+                    })
+                });
+
+                this.hideTyping();
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (data.success) {
+                    this.addMessage(data.response || 'No response received');
+                } else {
+                    this.addMessage('Error: ' + (data.error || 'Unknown error'));
+                }
+
+            } catch (error) {
+                this.hideTyping();
+                console.error('Widget: API request failed:', error);
+
+                // Enhanced error messages for debugging
+                if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                    this.addMessage('Network error. Check the browser console for details.');
+                } else if (error.message.includes('CORS')) {
+                    this.addMessage('CORS error. Try opening BookStack from the same origin as the chatbot API.');
+                } else {
+                    this.addMessage('Connection error: ' + error.message);
+                }
+            } finally {
+                input.focus();
+            }
+        }
+    };
+
+    // Initialize when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function() {
+            window.KnowledgeBotChat.init();
+        });
+    } else {
+        window.KnowledgeBotChat.init();
+    }
+})();
+</script>

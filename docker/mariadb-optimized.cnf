@@ -1,0 +1,35 @@
+# MariaDB Optimized Configuration for Small BookStack Instances
+# Place this file in: data/mariadb/custom.cnf
+
+[mysqld]
+# InnoDB Memory Optimization (Small Instance)
+innodb_buffer_pool_size = 64M          # Reduced from default 128M
+innodb_log_file_size = 16M             # Reduced from default 96M
+innodb_log_buffer_size = 8M            # Reduced from default 16M
+
+# InnoDB Performance for Small DBs
+innodb_flush_log_at_trx_commit = 2     # Better performance, slight durability trade-off
+innodb_flush_method = O_DIRECT         # Avoid double buffering
+innodb_file_per_table = 1              # Separate .ibd files for each table
+
+# General MySQL Optimization
+max_connections = 50                    # Reduced from default 151
+table_open_cache = 400                 # Reduced from default 2000
+query_cache_type = 1                   # Enable query cache
+query_cache_size = 16M                 # Small query cache
+query_cache_limit = 1M                 # Max query size to cache
+
+# Temporary Tables
+tmp_table_size = 16M                   # Reduced from default 16M
+max_heap_table_size = 16M              # Match tmp_table_size
+
+# Logging (optional - disable for even smaller size)
+slow_query_log = 0                     # Disable slow query log
+general_log = 0                        # Disable general log
+
+# Character Set
+character_set_server = utf8mb4
+collation_server = utf8mb4_unicode_ci
+
+# BookStack Compatibility
+sql_mode = ""                          # BookStack compatibility

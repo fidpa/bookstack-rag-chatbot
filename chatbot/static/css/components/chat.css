@@ -1,0 +1,8 @@
+/* KnowledgeBot - Chat Component */
+
+/* Import modular components */
+@import url('chat-layout.css');
+@import url('chat-controls.css');
+@import url('chat-messages.css');
+@import url('chat-input.css');
+@import url('chat-documents.css');

@@ -1,0 +1,58 @@
+/* KnowledgeBot - Navigation Component */
+.navbar {
+    background-color: var(--bg-light); border-bottom: 1px solid var(--border-color);
+    padding: var(--spacing) 0; position: sticky; top: 0; z-index: var(--z-navbar);
+}
+.navbar-content { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+.navbar-left, .navbar-right { display: flex; align-items: center; gap: var(--spacing); }
+
+.navbar-brand {
+    font-size: 1.25rem; font-weight: bold; color: var(--primary-color);
+    text-decoration: none; display: flex; align-items: center; gap: var(--spacing-sm);
+}
+.navbar-brand:hover { color: var(--primary-hover); text-decoration: none; }
+
+.navbar-link {
+    color: var(--text-color); text-decoration: none; padding: var(--spacing-sm) var(--spacing);
+    border-radius: var(--border-radius); transition: background-color 0.2s;
+}
+.navbar-link:hover { background-color: var(--border-color); text-decoration: none; color: var(--text-color); }
+.navbar-link.active { background-color: var(--primary-color); color: white; }
+
+/* Theme Toggle Button */
+.theme-toggle {
+    background: none; border: none; padding: var(--spacing-sm) var(--spacing);
+    border-radius: var(--border-radius); cursor: pointer; color: var(--text-color);
+    font-size: 0.875rem; display: flex; align-items: center; gap: 0.5rem;
+    height: 40px; transition: background-color 0.2s; white-space: nowrap;
+}
+.theme-toggle:hover { background-color: var(--border-color); }
+.theme-toggle:focus { outline: none; box-shadow: 0 0 0 2px var(--bg-primary), 0 0 0 3px var(--border-color); }
+
+/* Navbar Divider */
+.navbar-divider { color: var(--border-color); margin: 0 var(--spacing-sm); opacity: 0.5; font-weight: 300; }
+
+/* Theme Icons and Text - Hide all by default */
+.theme-icon-light, .theme-icon-dark, .theme-text-light, .theme-text-dark { display: none !important; }
+
+/* Theme Text Labels */
+.theme-text { font-weight: 500; }
+
+/* Show appropriate icon and text based on theme */
+[data-theme="light"] .theme-toggle .theme-icon-light,
+[data-theme="light"] .theme-toggle .theme-text-light { display: inline !important; }
+[data-theme="dark"] .theme-toggle .theme-icon-dark,
+[data-theme="dark"] .theme-toggle .theme-text-dark { display: inline !important; }
+
+/* Dark mode specific navbar adjustments */
+[data-theme="dark"] .navbar { background-color: #242424; border-bottom-color: var(--border-color); }
+[data-theme="dark"] .navbar-link:hover { background-color: rgba(255, 255, 255, 0.1); }
+[data-theme="dark"] .navbar-link.active { background-color: var(--primary-color); }
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+    .navbar-content { flex-wrap: wrap; gap: var(--spacing-sm); }
+    .navbar-left, .navbar-right { gap: var(--spacing-sm); }
+    .navbar-link { padding: var(--spacing-sm); font-size: 0.875rem; }
+    .theme-toggle { width: 36px; height: 36px; }
+}

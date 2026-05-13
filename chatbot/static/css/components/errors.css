@@ -1,0 +1,73 @@
+/* KnowledgeBot - Error Pages Component */
+
+/* Error Page Container */
+.error-page {
+    display: flex; justify-content: center; align-items: center;
+    min-height: 60vh; text-align: center; padding: var(--spacing-lg);
+}
+
+/* Error Content */
+.error-content { max-width: 500px; padding: var(--spacing-lg); }
+
+/* Error Icon */
+.error-icon { font-size: 4rem; margin-bottom: var(--spacing); animation: pulse 2s infinite; }
+.error-icon.error-404 { color: var(--warning-color); }
+.error-icon.error-500 { color: var(--danger-color); }
+.error-icon.error-403 { color: var(--info-color); }
+
+/* Error Heading */
+.error-content h1 { font-size: 2rem; margin-bottom: var(--spacing); color: var(--text-color); }
+.error-code {
+    font-size: 5rem; font-weight: 700; line-height: 1;
+    margin-bottom: var(--spacing-sm); color: var(--primary-color); opacity: 0.1;
+}
+
+/* Error Description */
+.error-content p { color: var(--text-muted); margin-bottom: var(--spacing-lg); font-size: 1.125rem; }
+
+/* Error Actions */
+.error-actions { display: flex; gap: var(--spacing); justify-content: center; flex-wrap: wrap; }
+
+/* Error Details (for debugging) */
+.error-details {
+    margin-top: var(--spacing-lg); padding: var(--spacing);
+    background-color: var(--bg-light); border: 1px solid var(--border-color);
+    border-radius: var(--border-radius); text-align: left;
+}
+.error-details-toggle {
+    cursor: pointer; color: var(--primary-color);
+    font-size: 0.875rem; margin-top: var(--spacing);
+}
+.error-details-content { display: none; margin-top: var(--spacing); }
+.error-details-content.show { display: block; }
+.error-details pre { margin: 0; font-size: 0.875rem; overflow-x: auto; }
+
+/* Maintenance Page */
+.maintenance-page { background-color: var(--bg-light); }
+.maintenance-icon { color: var(--info-color); font-size: 4rem; margin-bottom: var(--spacing); }
+.maintenance-progress {
+    width: 100%; height: 4px; background-color: var(--border-color);
+    border-radius: 2px; overflow: hidden; margin-top: var(--spacing-lg);
+}
+.maintenance-progress-bar {
+    height: 100%; background-color: var(--primary-color);
+    width: 60%; animation: progress 2s ease-in-out infinite;
+}
+
+@keyframes progress {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(200%); }
+}
+
+/* Offline Page */
+.offline-icon { color: var(--text-muted); font-size: 4rem; margin-bottom: var(--spacing); }
+.offline-retry { margin-top: var(--spacing-lg); }
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+    .error-content h1 { font-size: 1.5rem; }
+    .error-code { font-size: 3rem; }
+    .error-icon { font-size: 3rem; }
+    .error-actions { flex-direction: column; width: 100%; }
+    .error-actions .btn { width: 100%; }
+}

@@ -1,0 +1,79 @@
+"""
+Query Processor Constants
+German stopwords, intent patterns, and synonyms
+"""
+
+from .models import QueryIntent
+
+# Deutsche Stopwords (erweitert)
+GERMAN_STOPWORDS = {
+    # Artikel
+    'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'eines', 'einem', 'einen',
+    # Pronomen
+    'ich', 'du', 'er', 'sie', 'es', 'wir', 'ihr', 'mein', 'dein', 'sein', 'unser', 'euer',
+    'mir', 'dir', 'ihm', 'uns', 'euch', 'ihnen', 'mich', 'dich', 'sich',
+    # Konjunktionen
+    'und', 'oder', 'aber', 'doch', 'sondern', 'denn', 'weil', 'dass', 'wenn', 'als', 'ob',
+    'obwohl', 'damit', 'bevor', 'nachdem', 'während', 'bis', 'seit',
+    # Präpositionen
+    'in', 'im', 'an', 'am', 'auf', 'aus', 'bei', 'mit', 'nach', 'von', 'zu', 'zum', 'zur',
+    'für', 'gegen', 'ohne', 'um', 'durch', 'über', 'unter', 'vor', 'hinter', 'zwischen',
+    # Hilfsverben
+    'ist', 'sind', 'war', 'waren', 'wird', 'werden', 'wurde', 'wurden', 'hat', 'haben',
+    'hatte', 'hatten', 'kann', 'können', 'muss', 'müssen', 'soll', 'sollen', 'will', 'wollen',
+    'darf', 'dürfen', 'mag', 'mögen', 'möchte', 'möchten',
+    # Adverbien
+    'nicht', 'sehr', 'mehr', 'viel', 'wenig', 'ganz', 'alle', 'jeder', 'kein', 'keine',
+    'auch', 'noch', 'nur', 'schon', 'bereits', 'immer', 'oft', 'manchmal', 'niemals',
+    # Fragewörter (teilweise behalten für Intent-Erkennung)
+    'wer', 'wen', 'wem', 'wessen', 'wo', 'wohin', 'woher', 'wann', 'warum', 'weshalb',
+    'wieso', 'welche', 'welcher', 'welches',
+    # Sonstiges
+    'ja', 'nein', 'doch', 'also', 'denn', 'etwa', 'vielleicht', 'ziemlich'
+}
+
+# Intent-Patterns
+INTENT_PATTERNS = {
+    QueryIntent.DEFINITION: [
+        r'was\s+(ist|sind)\s+',
+        r'definition\s+(von|für)\s+',
+        r'bedeutet\s+',
+        r'bedeutung\s+(von|für)\s+',
+    ],
+    QueryIntent.EXPLANATION: [
+        r'wie\s+(funktioniert|arbeitet|geht)\s+',
+        r'erkläre\s+',
+        r'erklärung\s+(von|für)\s+',
+        r'wie\s+kann\s+',
+    ],
+    QueryIntent.EXAMPLE: [
+        r'beispiel\s+(für|von)\s+',
+        r'zeige?\s+beispiel',
+        r'gibt\s+es\s+beispiele',
+    ],
+    QueryIntent.COMPARISON: [
+        r'\s+vs\.?\s+',
+        r'\s+versus\s+',
+        r'\s+gegen\s+',
+        r'unterschied\s+(zwischen|von)\s+',
+        r'vergleich\s+(zwischen|von)\s+',
+    ],
+    QueryIntent.LIST: [
+        r'liste\s+(von|der|aller)\s+',
+        r'alle\s+',
+        r'welche\s+arten\s+',
+        r'typen\s+(von|der)\s+',
+    ]
+}
+
+# Synonyme für Query-Expansion
+SYNONYMS = {
+    'team': ['gruppe', 'arbeitsgruppe', 'teamarbeit'],
+    'reflexivität': ['reflexion', 'reflektion', 'selbstreflexion', 'reflexiv'],
+    'methode': ['verfahren', 'ansatz', 'technik', 'vorgehen'],
+    'analyse': ['untersuchung', 'auswertung', 'evaluation'],
+    'prozess': ['ablauf', 'verfahren', 'vorgang'],
+    'entwicklung': ['fortschritt', 'entfaltung', 'evolution'],
+    'kommunikation': ['austausch', 'dialog', 'interaktion'],
+    'struktur': ['aufbau', 'gliederung', 'organisation'],
+}

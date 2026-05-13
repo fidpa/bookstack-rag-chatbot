@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Widget</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .widget-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: white;
+        }
+        
+        .context-bar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px 15px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .context-icon {
+            font-size: 18px;
+        }
+        
+        .context-text {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #fafafa;
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-content {
+            max-width: 70%;
+            padding: 10px 15px;
+            border-radius: 12px;
+            word-wrap: break-word;
+        }
+        
+        .message.ai .message-content {
+            background: white;
+            border: 1px solid #e0e0e0;
+            color: #333;
+        }
+        
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .welcome-message {
+            text-align: center;
+            padding: 40px 20px;
+            color: #666;
+        }
+        
+        .welcome-message h3 {
+            color: #764ba2;
+            margin-bottom: 10px;
+        }
+        
+        .chat-input-container {
+            padding: 15px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+        }
+        
+        .chat-input-wrapper {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .chat-input {
+            flex: 1;
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 25px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        
+        .chat-input:focus {
+            border-color: #667eea;
+        }
+        
+        .send-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .send-button:hover {
+            transform: scale(1.1);
+        }
+        
+        .send-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .typing-indicator {
+            display: none;
+            padding: 10px 15px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 12px;
+            width: fit-content;
+            margin-bottom: 15px;
+        }
+        
+        .typing-indicator.active {
+            display: flex;
+            gap: 4px;
+        }
+        
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background: #999;
+            border-radius: 50%;
+            animation: typing 1.4s infinite;
+        }
+        
+        .typing-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        
+        .typing-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        
+        @keyframes typing {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                opacity: 0.5;
+            }
+            30% {
+                transform: translateY(-10px);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="widget-container">
+        <div class="context-bar">
+            <span class="context-icon">📍</span>
+            <span class="context-text" id="contextText">BookStack Knowledge Base</span>
+        </div>
+        
+        <div class="chat-messages" id="chatMessages">
+            <div class="welcome-message">
+                <h3>🤖 Chatbot</h3>
+                <p>Hi! I'm your AI assistant for this knowledge base.</p>
+                <p>Ask me about anything on this page or anywhere in the wiki.</p>
+            </div>
+        </div>
+        
+        <div class="typing-indicator" id="typingIndicator">
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        </div>
+        
+        <div class="chat-input-container">
+            <div class="chat-input-wrapper">
+                <input 
+                    type="text" 
+                    class="chat-input" 
+                    id="chatInput" 
+                    placeholder="Ihre Frage eingeben..."
+                    autocomplete="off"
+                >
+                <button class="send-button" id="sendButton">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Widget initialization
+        let bookstackContext = {
+            title: 'BookStack',
+            url: window.location.href,
+            pageId: null,
+            bookId: null
+        };
+        
+        // Session management using browser sessionStorage
+        let widgetSessionId = sessionStorage.getItem('knowledgebot-widget-session');
+        if (!widgetSessionId) {
+            // Generate new session ID
+            widgetSessionId = 'widget-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+            sessionStorage.setItem('knowledgebot-widget-session', widgetSessionId);
+        }
+        
+        // API configuration - Dynamic URL detection
+        function getApiBaseUrl() {
+            const hostname = window.location.hostname;
+            const protocol = window.location.protocol;
+
+            // Development: Use localhost with port 8888
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return 'http://localhost:8888';
+            }
+
+            // Production: Use current origin (HTTPS via nginx proxy, no port)
+            // nginx proxies /chat/api/ to chatbot:8888
+            return `${protocol}//${hostname}`;
+        }
+
+        const API_BASE_URL = getApiBaseUrl();
+        const USE_ECHO_TEST = false;  // Set to true to test echo endpoint first
+
+        console.log('[Widget] Using API Base URL:', API_BASE_URL);
+        
+        // Listen for context from parent BookStack page
+        window.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'bookstack-context') {
+                bookstackContext = event.data.page || bookstackContext;
+                updateContextDisplay();
+            }
+        });
+        
+        function updateContextDisplay() {
+            const contextText = document.getElementById('contextText');
+            if (bookstackContext.title) {
+                contextText.textContent = `📚 ${bookstackContext.title}`;
+            }
+        }
+        
+        // Chat functionality
+        const chatInput = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendButton');
+        const chatMessages = document.getElementById('chatMessages');
+        const typingIndicator = document.getElementById('typingIndicator');
+        
+        function addMessage(content, isUser = false) {
+            // Remove welcome message if exists
+            const welcomeMsg = chatMessages.querySelector('.welcome-message');
+            if (welcomeMsg) {
+                welcomeMsg.remove();
+            }
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user' : 'ai'}`;
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = content;
+            
+            messageDiv.appendChild(contentDiv);
+            chatMessages.appendChild(messageDiv);
+            
+            // Scroll to bottom
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        function showTyping() {
+            typingIndicator.classList.add('active');
+            chatMessages.appendChild(typingIndicator);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        function hideTyping() {
+            typingIndicator.classList.remove('active');
+        }
+        
+        async function sendMessage() {
+            const message = chatInput.value.trim();
+            if (!message) return;
+            
+            // Add user message
+            addMessage(message, true);
+            
+            // Clear input and disable button
+            chatInput.value = '';
+            sendButton.disabled = true;
+            
+            // Show typing indicator
+            showTyping();
+            
+            try {
+                // Determine which endpoint to use
+                const endpoint = USE_ECHO_TEST ? '/chat/api/echo' : '/chat/api/widget';
+                
+                // Make API call
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Widget-Session': widgetSessionId
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        bookstack_context: bookstackContext
+                    })
+                });
+                
+                hideTyping();
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Update session ID if server provides new one
+                    if (data.session_id) {
+                        widgetSessionId = data.session_id;
+                        sessionStorage.setItem('knowledgebot-widget-session', widgetSessionId);
+                    }
+                    
+                    // Add AI response
+                    addMessage(data.response || 'Keine Antwort erhalten');
+                } else {
+                    addMessage('Entschuldigung, es gab einen Fehler: ' + (data.error || 'Unbekannter Fehler'));
+                }
+                
+            } catch (error) {
+                hideTyping();
+                console.error('Error calling API:', error);
+                
+                // Check if it's a CORS error
+                if (error.message.includes('CORS') || error.message.includes('fetch')) {
+                    addMessage('Connection error: please make sure the chatbot service is running on port 8888.');
+                } else {
+                    addMessage('Error sending the message. Please try again.');
+                }
+            } finally {
+                sendButton.disabled = false;
+                chatInput.focus();
+            }
+        }
+        
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        
+        chatInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+        
+        // Enable/disable send button based on input
+        chatInput.addEventListener('input', function() {
+            sendButton.disabled = !this.value.trim();
+        });
+        
+        // Initial state
+        sendButton.disabled = true;
+        
+        // Try to get BookStack context from parent frame
+        try {
+            // Request context from parent window
+            if (window.parent !== window) {
+                window.parent.postMessage({ type: 'request-bookstack-context' }, '*');
+            }
+        } catch (e) {
+            console.log('Running in standalone mode');
+        }
+        
+        // Log session info for debugging
+        console.log('Widget initialized with session:', widgetSessionId);
+        console.log('API endpoint:', API_BASE_URL);
+        console.log('Echo test mode:', USE_ECHO_TEST);
+    </script>
+</body>
+</html>

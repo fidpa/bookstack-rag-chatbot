@@ -1,0 +1,30 @@
+# bookstack-rag-chatbot — Python dependencies
+# Direct dependencies only. Tested on Python 3.11.
+
+# ── Web framework ─────────────────────────────────────────────────────────────
+Flask==3.0.0
+Flask-Cors==4.0.0
+python-dotenv==1.0.0
+
+# ── Production WSGI server ────────────────────────────────────────────────────
+waitress==3.0.0
+
+# ── LLM providers ─────────────────────────────────────────────────────────────
+openai>=1.0.0           # Azure OpenAI SDK
+tenacity>=8.0.0         # Retry logic for API calls
+
+# ── HTTP client (BookStack API + Ollama provider) ─────────────────────────────
+requests>=2.31.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+pytz>=2024.1            # Timezone handling in logging
+PyYAML>=6.0             # YAML parsing in KB services
+
+# ── Document processing (knowledge-base upload) ───────────────────────────────
+pypdfium2>=4.30.0       # PDF extraction (primary)
+pypdf>=5.0.0            # PDF extraction (fallback)
+python-docx>=0.8.11     # DOCX extraction
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-cov>=4.0.0
