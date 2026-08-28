@@ -95,12 +95,13 @@ The flip side: this only works behind something that does authenticate. A public
 
 ## Webhook-Driven Sync
 
-The chatbot listens on `/webhook/bookstack` for 16 events:
+The chatbot listens on `/webhook/bookstack` for 13 events:
 
 - `page_create`, `page_update`, `page_delete`, `page_move`, `page_restore`
 - `chapter_create`, `chapter_update`, `chapter_delete`, `chapter_move`
 - `book_create`, `book_update`, `book_delete`, `book_sort`
-- `bookshelf_create`, `bookshelf_update`, `bookshelf_delete` (see [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md))
+
+Bookshelf events are not among them: a bookshelf holds no content of its own, so there is nothing to index (see [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md)).
 
 When BookStack fires a webhook, the chatbot fetches the affected page(s) via the BookStack API and updates its FTS5 index. There is no scheduled cron job; the index converges with BookStack on every edit, typically within 1–2 seconds.
 

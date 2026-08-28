@@ -20,6 +20,11 @@ webhook_bp = Blueprint("bookstack_webhook", __name__, url_prefix="/webhook")
 
 # Configuration
 WEBHOOK_SECRET = os.getenv("BOOKSTACK_WEBHOOK_SECRET", "")
+
+# Bookshelf events are deliberately absent. A shelf groups books and holds no
+# indexable content of its own, and since bookshelf_* starts with the same
+# letters as book_*, the book branch of bookstack_webhook() would swallow them
+# and report them as processed without touching the index.
 RELEVANT_EVENTS = [
     # Page events
     "page_create",
@@ -37,10 +42,6 @@ RELEVANT_EVENTS = [
     "book_update",
     "book_delete",
     "book_sort",
-    # Bookshelf events (optional)
-    "bookshelf_create",
-    "bookshelf_update",
-    "bookshelf_delete",
 ]
 
 

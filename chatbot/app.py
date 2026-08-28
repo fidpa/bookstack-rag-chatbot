@@ -288,7 +288,7 @@ def register_context_processors(app):
         else:
             # Production: Use app version or git commit hash
             # For now, use a static version that can be updated on deployment
-            return {"asset_version": app.config.get("APP_VERSION", "0.1.1")}
+            return {"asset_version": app.config.get("APP_VERSION", "0.1.4")}
 
     @app.context_processor
     def inject_globals():

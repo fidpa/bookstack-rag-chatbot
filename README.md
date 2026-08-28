@@ -1,6 +1,6 @@
 # BookStack RAG Chatbot
 
-![Version](https://img.shields.io/badge/version-0.1.2-blue)
+![Version](https://img.shields.io/badge/version-0.1.4-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)
 ![Docker](https://img.shields.io/badge/Docker-20.10%2B-blue?logo=docker)
@@ -18,7 +18,7 @@ A production-ready Retrieval-Augmented Generation (RAG) chatbot for [BookStack](
 - **Hybrid RAG** — SQLite FTS5 keyword retrieval with multi-strategy search (title, exact phrase, AND, OR, proximity, chunk-level, fuzzy) and score fusion, over **both** the BookStack content and an independent knowledge base of uploaded documents
 - **Multi-provider LLM factory** — Azure OpenAI and Ollama through a single interface; switch by changing one env var
 - **Embedded JS widget** — drop one `<script>` snippet into BookStack's custom-head settings and you get a chat bubble on every page
-- **Real-time sync** — 16 BookStack webhook events keep the RAG index in lock-step with wiki edits, with no scheduled cron
+- **Real-time sync** — 13 BookStack webhook events keep the RAG index in lock-step with wiki edits, with no scheduled cron
 - **IP-based access control + rate limiting** — sliding-window per-IP limits, allow-list enforced before any LLM call
 - **Admin CLI** — `scripts/kb_admin.py` for adding/removing knowledge-base documents, inspecting the index, and running health checks
 - **Hardened Docker stack** — `no-new-privileges:true`, explicit CPU/RAM limits, healthchecks on every service
@@ -90,7 +90,7 @@ python3 samples/load-samples.py
                 │   • Hybrid retrieval (SQLite FTS5)             │
                 │   • LLM factory  ── Azure / Ollama             │
                 └────┬──────────────────────────────┬───────────┘
-                     │ webhooks (16 events)         │ LLM call
+                     │ webhooks (13 events)         │ LLM call
                      ▼                              ▼
               ┌──────────────────┐         ┌──────────────────┐
               │ BookStack API    │         │   LLM provider   │
@@ -223,7 +223,7 @@ bookstack-rag-chatbot/
 | `chatbot/llm/factory.py` | Selects and instantiates an LLM provider | Provider pattern |
 | `chatbot/llm/providers/` | Azure OpenAI, Ollama implementations | `openai`, `requests` |
 | `chatbot/bookstack/api_client.py` | BookStack REST client | `requests` |
-| `chatbot/bookstack/webhooks.py` | 16 webhook event handlers | Flask blueprints |
+| `chatbot/bookstack/webhooks.py` | Webhook endpoint for 13 BookStack events | Flask blueprint |
 | `chatbot/bookstack/chunking.py` | Chunking strategy for wiki pages | Sentence-aware sliding window |
 | `chatbot/documents/knowledge_base/` | KB ingestion (PDF/DOCX/MD), FTS5 indexing, hybrid search | `pypdfium2`, `pypdf`, `python-docx`, SQLite FTS5 |
 | `chatbot/chat/widget_service.py` | Widget query endpoint, prompt assembly, session handling | Flask |
@@ -239,7 +239,7 @@ bookstack-rag-chatbot/
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions and trade-offs |
 | [RAG_DESIGN.md](docs/RAG_DESIGN.md) | Chunking, FTS5 multi-strategy retrieval, and score fusion |
 | [WIDGET_INTEGRATION.md](docs/WIDGET_INTEGRATION.md) | Embedding the widget into BookStack (or any other site) |
-| [BOOKSTACK_WEBHOOKS.md](docs/BOOKSTACK_WEBHOOKS.md) | The 16 webhook events and how they map to index operations |
+| [BOOKSTACK_WEBHOOKS.md](docs/BOOKSTACK_WEBHOOKS.md) | The 13 webhook events and how they map to index operations |
 | [SECURITY.md](docs/SECURITY.md) | Hardening guide for production deployments |
 | [KB_ADMIN_CLI.md](docs/KB_ADMIN_CLI.md) | Admin CLI command reference |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every environment variable explained |

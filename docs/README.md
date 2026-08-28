@@ -14,7 +14,7 @@ Navigation hub for the `bookstack-rag-chatbot` docs. Files are organised loosely
 | Document | What it covers |
 |---|---|
 | [KB_ADMIN_CLI.md](KB_ADMIN_CLI.md) | Knowledge-base admin CLI: upload, list, delete, health-check |
-| [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md) | All 16 BookStack webhook events and how they map to RAG-index operations |
+| [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md) | All 13 BookStack webhook events and how they map to RAG-index operations |
 
 ## Explanation
 

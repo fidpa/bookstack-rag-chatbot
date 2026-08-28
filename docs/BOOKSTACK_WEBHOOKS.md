@@ -1,6 +1,6 @@
 # BookStack Webhooks
 
-The chatbot keeps its RAG index in sync with BookStack via webhooks. This page documents the 16 events the chatbot listens to, what each one does, and how to configure them.
+The chatbot keeps its RAG index in sync with BookStack via webhooks. This page documents the 13 events the chatbot listens to, what each one does, and how to configure them.
 
 ## Configuring Webhooks in BookStack
 
@@ -11,12 +11,12 @@ In BookStack:
 3. Set:
    - **Name**: `chatbot`
    - **Endpoint**: `http://chatbot:8888/webhook/bookstack` (Docker-internal hostname)
-   - **Events**: select all 16 events listed below.
+   - **Events**: select all 13 events listed below.
 4. Save.
 
 > **Note**: BookStack v25.07 does **not** sign webhooks with HMAC. The chatbot enforces authenticity via the IP allow-list — make sure your reverse proxy strips spoofed source IPs. See [SECURITY.md](SECURITY.md).
 
-## The 16 Events
+## The 13 Events
 
 BookStack v25.07 emits underscore-cased event names. The list below matches
 `RELEVANT_EVENTS` in `chatbot/bookstack/webhooks.py`.
@@ -36,9 +36,13 @@ BookStack v25.07 emits underscore-cased event names. The list below matches
 | `book_update` | A book is renamed or metadata changes | Update metadata; re-index descendant pages |
 | `book_delete` | A book is deleted | Remove descendant pages from the index |
 | `book_sort` | A book's chapter/page ordering changes | Refresh parent links |
-| `bookshelf_create` | A bookshelf is created | Index bookshelf metadata |
-| `bookshelf_update` | A bookshelf is updated | Update metadata |
-| `bookshelf_delete` | A bookshelf is deleted | Index entries unaffected (bookshelves are virtual) |
+
+### Bookshelf events are not in the list
+
+`bookshelf_create`, `bookshelf_update` and `bookshelf_delete` were listed here until
+v0.1.4 and never had an index operation: a bookshelf groups books, it holds no content
+of its own. Subscribing to them in BookStack is harmless but pointless, and the endpoint
+answers them with `ignored`.
 
 ## Event Flow
 

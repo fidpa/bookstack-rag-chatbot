@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-28: Bookshelf webhooks no longer report work they never did
+
+Three of the sixteen events the webhook endpoint accepted had no branch behind them.
+`bookstack_webhook()` in `chatbot/bookstack/webhooks.py` branches on page, chapter and
+book, and reads a shelf nowhere; because `bookshelf_*` starts with the same letters as
+`book_*`, `bookshelf_create`, `bookshelf_update` and `bookshelf_delete` reached the book
+branch, which looks for `related.book.id`. A shelf change therefore left the index
+untouched while the endpoint answered `{"status": "processed"}` and the documentation
+recorded an index operation for each of the three.
+
+### Fixed
+- **A bookshelf change is now answered with `ignored` instead of `processed`.** The three
+  `bookshelf_*` events are gone from `RELEVANT_EVENTS` in
+  `chatbot/bookstack/webhooks.py`, so the endpoint states what it does rather than
+  claiming a synchronisation it never ran. Thirteen events remain, each with a branch that
+  reaches `ContentSyncService`.
+- **Browsers stop requesting assets under a version that no longer exists.** The
+  `APP_VERSION` fallback in `chatbot/app.py` had stayed at `0.1.1` while `CLI_VERSION` in
+  `scripts/kb_admin.py` and the README badge moved on with v0.1.2. Nothing sets
+  `APP_VERSION`, so the fallback is the value that ships. All three now read `0.1.4`.
+- **The webhook documentation describes what the code does.** `docs/BOOKSTACK_WEBHOOKS.md`
+  listed sixteen events and gave each `bookshelf_*` entry an index action;
+  `README.md`, `docs/README.md` and `docs/ARCHITECTURE.md` repeated the count in six more
+  places. All of them now say thirteen, and the webhook page says why the shelf events are
+  absent.
+
+### Upgrade notes
+
+If a BookStack webhook is subscribed to the three `bookshelf_*` events, it can be
+unsubscribed. Nothing changes if it stays subscribed: those deliveries never altered the
+index, and they are now answered with `ignored` instead of `processed`. No re-index is
+needed, and no other event changes behaviour.
+
 ## [0.1.3] - 2026-08-28: Release pages are built from this file, and the lint gate is pinned
 
 The three releases of 13 May 2026 were published by hand. `.github/workflows/release.yml`
