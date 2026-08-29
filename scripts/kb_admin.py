@@ -29,7 +29,7 @@ except ImportError as e:
     sys.exit(1)
 
 # CLI Configuration
-CLI_VERSION = "0.1.4"
+CLI_VERSION = "0.2.0"
 CLI_NAME = "kb_admin"
 
 

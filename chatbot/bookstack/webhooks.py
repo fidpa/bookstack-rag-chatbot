@@ -141,15 +141,25 @@ def bookstack_webhook():
             chapter_id = data.get("related", {}).get("chapter", {}).get("id")
             if chapter_id:
                 client.invalidate_cache(f"chapter_{chapter_id}")
-                # Re-index all pages in chapter
-                sync_service.sync_chapter(chapter_id)
+
+                if event == "chapter_delete":
+                    # The chapter is gone, so the API cannot list its pages any more.
+                    # Remove them by the chapter_id recorded at index time.
+                    sync_service.remove_chapter_from_index(chapter_id)
+                else:
+                    # Re-index all pages in chapter
+                    sync_service.sync_chapter(chapter_id)
 
         elif "book" in event:
             book_id = data.get("related", {}).get("book", {}).get("id")
             if book_id:
                 client.invalidate_cache(f"book_{book_id}")
-                # Re-index entire book
-                sync_service.sync_book(book_id)
+
+                if event == "book_delete":
+                    sync_service.remove_book_from_index(book_id)
+                else:
+                    # Re-index entire book
+                    sync_service.sync_book(book_id)
 
         return jsonify({"status": "processed", "event": event}), 200
 

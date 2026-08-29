@@ -9,7 +9,7 @@ Symptom → likely cause → fix. Common issues first.
 | Check | How |
 |---|---|
 | Did BookStack save the custom HTML? | Settings → Customisation → reload, content should still be there |
-| Browser console errors? | `Ctrl+Shift+J` (Firefox `Ctrl+Shift+K`) — look for 404 on `widget.js` or CSP blocks |
+| Browser console errors? | `Ctrl+Shift+J` (Firefox `Ctrl+Shift+K`). The widget logs its chosen API URL as `[Widget] ... mode - API URL:`; a missing line means the script never ran, most likely a CSP block. There is no `widget.js` to 404, everything is inline in `widget.html` |
 | Are you on a page that hides the widget? | Some BookStack admin pages strip custom HTML |
 | Did you save Customisation **and** clear browser cache? | `Ctrl+Shift+R` / `Cmd+Shift+R` |
 
@@ -21,7 +21,8 @@ docker compose -f docker/docker-compose.yml logs chatbot --tail 50
 
 Look for:
 
-- `denied by IP allow-list` → your client IP is not in `ALLOWED_VPN_IPS`. Add it, restart `chatbot`.
+- `Denied <ip> (not in ALLOWED_VPN_IPS)` → your client IP is not on the allow-list. Add it, restart `chatbot`.
+- `ALLOWED_VPN_IPS is set but contains no valid CIDRs - denying all requests` → a typo in the list. Every request is refused until it parses.
 - `LLM provider not configured` → no provider key in `.env`. Set `AZURE_OPENAI_API_KEY` or `ENABLE_OLLAMA_FALLBACK=true`.
 - `rate limit exceeded` → you hit `RATE_LIMIT_PER_MINUTE`. Wait 60 s or raise the limit.
 
@@ -29,8 +30,15 @@ Look for:
 
 Two common causes:
 
-1. **Index is empty** — no content has been indexed yet. Run `samples/load-samples.py` to verify the loop end-to-end, then check that your real BookStack pages are being indexed (look for `page_create`/`page_update` events in the chatbot logs).
-2. **Webhooks not configured** — see [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
+1. **The index is empty.** No content has reached it yet. Run `samples/load-samples.py`
+   to prove the loop end to end, then look for `Processing BookStack event:` lines in the
+   chatbot log when you edit a real page.
+2. **Webhooks are not configured**, or they arrive and change nothing. The endpoint
+   answers `processed` either way, so the log is the only witness. See
+   [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
+3. **The index drifted.** If it cites pages that are gone, or misses pages that exist,
+   rebuild it with `python resync.py --full-resync` inside the chatbot container. See
+   [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
 
 ## BookStack
 
@@ -64,7 +72,7 @@ docker compose -f docker/docker-compose.yml restart bookstack
 
 ## Chatbot Backend
 
-### "Healthcheck failing — `chatbot` keeps restarting"
+### "Healthcheck failing, `chatbot` keeps restarting"
 
 ```bash
 docker compose -f docker/docker-compose.yml logs chatbot --tail 100
@@ -72,9 +80,9 @@ docker compose -f docker/docker-compose.yml logs chatbot --tail 100
 
 Typical causes:
 
-- Missing required env var (e.g. `SECRET_KEY` empty). The chatbot fails fast on startup with a clear error.
+- A missing env var will **not** stop it. `SECRET_KEY` falls back to a built-in literal and `ALLOWED_VPN_IPS` falls back to allowing everything, both silently; look for the startup warnings rather than a crash.
 - Database file permissions. The container runs as `1000:1000`; if you bind-mounted a host directory owned by root, fix the host permissions: `sudo chown -R 1000:1000 ./data`.
-- Out of memory while loading a large model. Raise `mem_limit` in `docker-compose.yml`.
+- Out of memory. Raise `deploy.resources.limits.memory` for the `chatbot` service in `docker/docker-compose.yml`; it is 4 GB by default.
 
 ### "SQLite database is locked"
 
@@ -83,18 +91,20 @@ This happens if you run the admin CLI on the host while the container is also wr
 ```bash
 # Stop the container, then run the CLI, then start it again
 docker compose -f docker/docker-compose.yml stop chatbot
-python3 scripts/kb_admin.py document reindex --all
+PYTHONPATH=chatbot python3 scripts/kb_admin.py bulk reindex --force
 docker compose -f docker/docker-compose.yml start chatbot
 ```
 
-For ad-hoc reads (`list`, `search`, `health-check`) the lock is usually not a problem; you can leave the container running.
+For ad-hoc reads (`documents list`, `index status`, `maintenance health-check`) the lock
+is usually not a problem and the container can keep running. The CLI needs `PYTHONPATH`
+and a reachable `DATABASE_PATH`; see [KB_ADMIN_CLI.md](KB_ADMIN_CLI.md).
 
 ## LLM Providers
 
 ### "Azure OpenAI returns 401 Unauthorized"
 
 - `AZURE_OPENAI_API_KEY` is wrong, expired, or revoked. Check Azure Portal → your OpenAI resource → Keys and Endpoint.
-- The endpoint must include the trailing slash: `https://my-resource.openai.azure.com/`.
+- `AZURE_OPENAI_ENDPOINT` is passed to the Azure SDK unchanged as `azure_endpoint`; give it the resource URL in the form the Azure Portal shows, `https://my-resource.openai.azure.com/`.
 
 ### "Azure OpenAI returns 404 Not Found"
 
@@ -127,7 +137,10 @@ RATE_LIMIT_PER_MINUTE=5         # cap user-side too
 
 ### "Index rebuild is very slow"
 
-A `reindex --all` runs every document through chunking + indexing single-threaded. For ~1 000 documents expect ~2 minutes. For 10 000+ documents, run the rebuild during off-hours.
+`bulk reindex` runs every document through chunking and indexing in one thread, and
+`--batch-size` only groups the work, it does not parallelise it. How long that takes
+depends on document size and disk; measure one batch before scheduling the rest, and
+run large rebuilds outside working hours because the writer lock is held throughout.
 
 ## Last Resort
 

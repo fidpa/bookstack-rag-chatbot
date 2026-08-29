@@ -1,6 +1,6 @@
 # BookStack RAG Chatbot
 
-![Version](https://img.shields.io/badge/version-0.1.4-blue)
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)
 ![Docker](https://img.shields.io/badge/Docker-20.10%2B-blue?logo=docker)
@@ -9,29 +9,29 @@
 ![Status](https://img.shields.io/badge/status-production-brightgreen)
 ![Last Commit](https://img.shields.io/github/last-commit/fidpa/bookstack-rag-chatbot)
 
-A production-ready Retrieval-Augmented Generation (RAG) chatbot for [BookStack](https://www.bookstackapp.com/) wikis. It indexes wiki content via webhooks, lets users ask questions inside a small embedded widget, and answers from the wiki using Azure OpenAI or a local Ollama model.
+A Retrieval-Augmented Generation (RAG) chatbot for [BookStack](https://www.bookstackapp.com/) wikis. It indexes wiki content via webhooks, puts a chat bubble on every BookStack page through an embedded widget, and answers from the wiki using Azure OpenAI or a local Ollama model.
 
-**The Problem**: Self-hosted wikis (BookStack, Wiki.js, Outline, Confluence Server) accumulate hundreds of pages and great content — but their full-text search is keyword-only, and a public LLM has never seen your internal documentation. Visitors give up searching, and your team answers the same questions in chat over and over. After integrating a RAG-backed chatbot into a production wiki running for months, I extracted the entire setup into this repository.
+Self-hosted wikis fill up with content that keyword search cannot find, and a public LLM has never seen any of it. Visitors give up searching, and the same questions come back in team chat. This repository is the setup that has run next to a production BookStack instance since October 2025, with the company-specific parts removed.
 
 ## Features
 
-- **Hybrid RAG** — SQLite FTS5 keyword retrieval with multi-strategy search (title, exact phrase, AND, OR, proximity, chunk-level, fuzzy) and score fusion, over **both** the BookStack content and an independent knowledge base of uploaded documents
-- **Multi-provider LLM factory** — Azure OpenAI and Ollama through a single interface; switch by changing one env var
-- **Embedded JS widget** — drop one `<script>` snippet into BookStack's custom-head settings and you get a chat bubble on every page
-- **Real-time sync** — 13 BookStack webhook events keep the RAG index in lock-step with wiki edits, with no scheduled cron
-- **IP-based access control + rate limiting** — sliding-window per-IP limits, allow-list enforced before any LLM call
-- **Admin CLI** — `scripts/kb_admin.py` for adding/removing knowledge-base documents, inspecting the index, and running health checks
-- **Hardened Docker stack** — `no-new-privileges:true`, explicit CPU/RAM limits, healthchecks on every service
-- **Pluggable storage** — uses SQLite FTS5 by default; the indexing layer is abstracted so a Postgres + `pgvector` backend can be dropped in for larger corpora
-- **Production-tested** — running in a real SMB wiki since October 2025
+- **Hybrid retrieval over two indexes**: seven SQLite FTS5 strategies (title and tags, exact phrase, AND, OR, proximity, chunk-level, fuzzy) run against both the BookStack content and an independent knowledge base of uploaded documents. A document that several strategies find gets a fusion bonus.
+- **Two LLM providers behind one interface**: `LLMProvider` in `chatbot/llm/base.py`, with Azure OpenAI and Ollama implementations. The factory picks by which credentials are present.
+- **Embedded JS widget**: one `<script>` snippet in BookStack's custom-head setting, and the chat bubble appears on every page.
+- **Webhook sync, no cron**: 13 BookStack events (page, chapter, book) reach `ContentSyncService` and move the index as the wiki is edited, deletions included. `chatbot/resync.py --full-resync` rebuilds the index where webhooks were missed.
+- **IP allow-list and per-IP rate limit**: both are decorators on the widget endpoint in `chatbot/utils/rate_limiter.py` and run before any LLM call. The limit is a sliding window, 30 requests per minute by default.
+- **Admin CLI**: `scripts/kb_admin.py` carries five subcommands (`documents`, `bulk`, `index`, `stats`, `maintenance`) for knowledge-base documents, reindexing, statistics and maintenance.
+- **Hardened Docker stack**: `no-new-privileges:true` and a healthcheck on all three services, CPU and memory limits on the chatbot container.
 
 ## ⚠️ Known Limitations
 
-> - ❌ **BookStack webhooks do not support HMAC signature validation** (as of v25.07). Authenticity is enforced via the IP allow-list — make sure your reverse proxy strips spoofed source IPs.
-> - ❌ **SQLite FTS5 is single-writer**. The current setup handles wikis up to ~10 000 pages comfortably. Larger corpora should swap in Postgres + `pgvector`; the indexing layer is abstracted for it (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
-> - ❌ **Single-tenant**. One deployment serves one BookStack instance.
-> - ⚠️ **Ollama fallback is disabled by default** (`ENABLE_OLLAMA_FALLBACK=false`) to prevent unintentional fallback to an unhardened local model. Enable it explicitly if you want it.
-> - ⚠️ **Some internal docstrings and comments are still in German** — a legacy of the original production deployment. The user-facing surface (README, env vars, CLI, log messages) is fully English. PRs translating internals are very welcome.
+> - ❌ **Stock BookStack does not sign its webhooks** (checked against v25.07). Authenticity rests on the IP allow-list, so your reverse proxy has to strip spoofed source IPs. The HMAC-SHA256 check in `chatbot/bookstack/webhooks.py` exists and switches on with `BOOKSTACK_WEBHOOK_SECRET`, but nothing sends the `X-BookStack-Signature` header until a custom plugin or a later BookStack release does.
+> - ❌ **An empty `ALLOWED_VPN_IPS` allows every source**, and `.env.example` ships it empty. Fill it in before the chatbot is reachable from anywhere but your own machine.
+> - ❌ **No storage abstraction.** SQLite access lives in four service classes under `chatbot/documents/knowledge_base/services/` (storage, indexing, search, context). There is no backend interface to implement, so moving to Postgres and `pgvector` means rewriting those four, not plugging into a seam. Only the LLM layer is abstracted today.
+> - ❌ **SQLite FTS5 is single-writer.** The deployment behind this repository indexes about 150 pages. The 10 000-page figure quoted in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is an estimate from FTS5's behaviour, not a measured ceiling.
+> - ❌ **Single-tenant.** One deployment serves one BookStack instance.
+> - ⚠️ **Ollama fallback is off by default** (`ENABLE_OLLAMA_FALLBACK=false`), so a missing Azure key fails loudly instead of quietly reaching for an unhardened local model. Turn it on explicitly.
+> - ⚠️ **Some internal docstrings and comments are still in German**, a legacy of the original production deployment. The user-facing surface (README, env vars, CLI, log messages) is English, with two exceptions: `chatbot/llm/factory.py` raises two German `ValueError` strings that reach the operator log. PRs translating internals are very welcome.
 
 ## Quick Start
 
@@ -45,7 +45,8 @@ cd bookstack-rag-chatbot
 # 2. Configure
 cp .env.example .env
 # Open .env and set: SECRET_KEY, BOOKSTACK_DB_PASSWORD, MYSQL_ROOT_PASSWORD,
-# BOOKSTACK_APP_KEY (see comments in the file), and ONE LLM provider key.
+# BOOKSTACK_APP_KEY (see comments in the file), ALLOWED_VPN_IPS,
+# and ONE LLM provider key.
 
 # 3. Boot the stack
 docker compose -f docker/docker-compose.yml up -d
@@ -60,10 +61,13 @@ docker compose -f docker/docker-compose.yml up -d
 # 5. Restart the chatbot so it picks up the new tokens
 docker compose -f docker/docker-compose.yml restart chatbot
 
-# 6. Load the demo content (the fictional Acme Inc. knowledge base)
+# 6. Load the demo content (the fictional Acme Inc. knowledge base).
+# The loader runs on the host and reads its credentials from the environment.
+pip install requests
+set -a; . ./.env; set +a
 python3 samples/load-samples.py
 
-# 7. Open BookStack again — you should see the chat bubble in the lower-right.
+# 7. Open BookStack again. The chat bubble sits in the lower-right corner.
 # Try: "What are Acme's core working hours?"
 ```
 
@@ -100,53 +104,53 @@ python3 samples/load-samples.py
 
 The chatbot owns one SQLite database (`/app/data/chatbot.db`) with two parallel indexes:
 
-- **`bookstack_*` tables** — every BookStack page, kept in sync via webhooks.
-- **`kb_*` tables** — uploaded documents (PDF / DOCX / Markdown / text), managed via the admin CLI.
+- **`bookstack_*` tables**: every BookStack page, kept in sync via webhooks.
+- **`kb_*` tables**: uploaded documents (PDF, DOCX, Markdown, text), managed via the admin CLI.
 
-At query time, both are searched in parallel using seven FTS5 strategies (title, exact phrase, AND, OR, proximity, chunk-level, fuzzy). Scores are fused with a multi-strategy bonus, and the top candidates are handed to the LLM as context for the final answer.
+Both are searched at query time, and the top candidates go to the LLM as context for the answer.
 
 ## Use Cases
 
 **Perfect for:**
 
-- 🏢 **Internal company wikis** — Q&A over your team's documentation
-- 🎓 **Customer-facing docs portals** — "ask the docs" widget for product help
-- 👋 **Employee onboarding** — new hires ask the bot before pinging a human
+- 🏢 **Internal company wikis**: Q&A over your team's documentation
+- 🎓 **Customer-facing docs portals**: an "ask the docs" widget for product help
+- 👋 **Employee onboarding**: new hires ask the bot before pinging a human
 - 📚 **Self-hosted knowledge bases** for SMBs, agencies, research labs
 
 **Not recommended for:**
 
-- 🌍 **Public, unauthenticated chatbots** — the IP allow-list is the only auth layer; a public-internet deployment needs an additional auth proxy
-- 🏬 **Multi-tenant SaaS** — single-tenant by design
-- 📖 **Wikis larger than ~10 000 pages** — outgrow SQLite FTS5; swap in Postgres + `pgvector`
-- 🧠 **Hallucination-sensitive contexts** (medical, legal advice given to end users) — the LLM still hallucinates; this is a knowledge-retrieval tool, not a source of truth
+- 🌍 **Public, unauthenticated chatbots**: the IP allow-list is the only auth layer, so a public-internet deployment needs an auth proxy in front of it
+- 🏬 **Multi-tenant SaaS**: single-tenant by design
+- 📖 **Corpora well past a few thousand pages**: see the SQLite limitation above
+- 🧠 **Hallucination-sensitive contexts** (medical or legal advice given to end users): the LLM still hallucinates. This retrieves from your wiki; it does not certify the answer.
 
 ## Key Concepts
 
-### Hybrid RAG, not pure vector search
+### Hybrid retrieval, not vector search
 
-We don't use embeddings as the primary retrieval mechanism. We run several FTS5 queries against the same index — title match, exact phrase, AND/OR keyword combinations, proximity, chunk-level, and fuzzy — and fuse the result sets with a multi-strategy bonus before handing the top candidates to the LLM. This is intentional:
+Embeddings are not the primary retrieval mechanism here. Seven FTS5 queries run against the same index (title and tags, exact phrase, AND, OR, proximity, chunk-level, fuzzy), and their result sets are fused in `chatbot/documents/knowledge_base/services/hybrid_search/fusion.py`: a document's score is multiplied by `1 + 0.5 * n` for the `n` strategies that found it, and the top candidates are handed to the LLM.
 
-- **Latency**: FTS5 returns in <10 ms over ~10k documents on a single laptop. A vector DB roundtrip is typically 50–200 ms.
-- **Operational cost**: SQLite has no separate service to operate or back up.
-- **Quality**: For internal docs in a single language with consistent vocabulary, BM25 / FTS5 is competitive with dense retrieval. The multi-strategy fusion compensates for queries that only one query type would find.
+Two reasons for that choice. Retrieval stays inside the SQLite process, so there is no network hop before the LLM call and no second data service to operate or back up. And for internal docs in one language with consistent vocabulary, BM25 and FTS5 hold up against dense retrieval; the fusion covers the queries that only one strategy would have found. Where that stops being true, multilingual corpora and semantic questions, is written up in [docs/RAG_DESIGN.md](docs/RAG_DESIGN.md).
 
-The `documents/knowledge_base/` layer is abstracted, so the team that needs `pgvector` later can implement it without rewriting the rest.
+### The storage layer is SQLite all the way down
 
-### Multi-provider LLM factory
+The knowledge-base code is split into four services (storage, indexing, search, context), which keeps the SQL in a small number of files. It is a separation of concerns, not a backend seam: none of the four sits behind an interface, and every one of them writes FTS5 SQL directly. A Postgres or `pgvector` backend is a rewrite of those four classes, and extracting a backend interface is step zero. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) carries the trade-off table behind the SQLite decision.
 
-The `chatbot/llm/` module exposes a single `LLMProvider` interface. The factory picks an implementation based on env vars, with this preference order:
+### Provider selection
 
-1. Azure OpenAI (if `AZURE_OPENAI_API_KEY` is set) — most reliable for production
-2. Ollama (only if `ENABLE_OLLAMA_FALLBACK=true`) — for fully-offline deployments
+The factory in `chatbot/llm/factory.py` picks by what is configured:
 
-Switching providers is one env-var change and a container restart.
+1. **Azure OpenAI**, when both `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` are set and the endpoint answers. This is what the production deployment runs.
+2. **Ollama**, only when `ENABLE_OLLAMA_FALLBACK=true` and the local instance answers.
+
+If neither is available, the request fails with an error that names the missing piece, rather than degrading silently. Switching providers is an env-var change and a container restart.
 
 ### Widget-only architecture
 
-The chatbot has no UI of its own. There is no login, no user database, and no admin web interface. Everything user-facing happens inside the BookStack page through the embedded widget — which means **BookStack owns user identity and access control**. The chatbot trusts whatever IP / session has been allowed past BookStack and the reverse proxy.
+The chatbot has no UI of its own: no login, no user database, no admin web interface. Everything user-facing happens inside the BookStack page through the embedded widget, which means **BookStack owns user identity and access control**. The chatbot trusts whatever IP and session got past BookStack and the reverse proxy.
 
-This is deliberate: one fewer system to harden, one fewer login screen for users, and one source of truth for who can see what.
+That is deliberate. One fewer system to harden, one fewer login screen, and one source of truth for who can see what. The cost is stated in the limitations above: everything the chatbot itself enforces is an IP allow-list.
 
 ## Repository Structure
 
@@ -170,11 +174,11 @@ bookstack-rag-chatbot/
 │   ├── app.py                    # Flask entrypoint
 │   ├── config.py
 │   ├── startup_migrations.py     # Schema migration runner
-│   ├── llm/                      # Multi-provider LLM factory
+│   ├── llm/                      # LLMProvider interface + Azure/Ollama
 │   ├── bookstack/                # BookStack API client + webhook handlers
 │   ├── chat/                     # Widget endpoint, session, prompt building
 │   ├── documents/                # RAG layer + knowledge-base management
-│   ├── utils/                    # Rate limiter, DB helpers, timezone
+│   ├── utils/                    # Rate limiter, IP allow-list, DB helpers, timezone
 │   ├── static/                   # CSS / JS (loaded by Flask templates)
 │   └── templates/                # Jinja templates
 │
@@ -184,8 +188,8 @@ bookstack-rag-chatbot/
 │   └── theme-functions.php       # Optional theme hook
 │
 ├── docker/
-│   ├── docker-compose.yml        # 3-service stack: bookstack, mariadb, chatbot
-│   ├── mariadb-optimized.cnf     # Mariadb tuning for small instances
+│   ├── docker-compose.yml        # 3-service stack: bookstack, bookstack_db, chatbot
+│   ├── mariadb-optimized.cnf     # MariaDB tuning for small instances
 │   └── nginx-example.conf        # Optional reverse-proxy template
 │
 ├── samples/                      # Acme Inc. fictional knowledge base
@@ -220,16 +224,18 @@ bookstack-rag-chatbot/
 | Component | Purpose | Technology |
 |-----------|---------|------------|
 | `chatbot/app.py` | Flask HTTP entrypoint, route registry, health endpoint | Python 3.11, Flask |
-| `chatbot/llm/factory.py` | Selects and instantiates an LLM provider | Provider pattern |
+| `chatbot/llm/base.py` | `LLMProvider` abstract base class | `abc` |
+| `chatbot/llm/factory.py` | Selects and instantiates a provider | Factory function |
 | `chatbot/llm/providers/` | Azure OpenAI, Ollama implementations | `openai`, `requests` |
 | `chatbot/bookstack/api_client.py` | BookStack REST client | `requests` |
 | `chatbot/bookstack/webhooks.py` | Webhook endpoint for 13 BookStack events | Flask blueprint |
 | `chatbot/bookstack/chunking.py` | Chunking strategy for wiki pages | Sentence-aware sliding window |
 | `chatbot/documents/knowledge_base/` | KB ingestion (PDF/DOCX/MD), FTS5 indexing, hybrid search | `pypdfium2`, `pypdf`, `python-docx`, SQLite FTS5 |
-| `chatbot/chat/widget_service.py` | Widget query endpoint, prompt assembly, session handling | Flask |
-| `chatbot/security/` *(via utils)* | IP allow-list, sliding-window rate limit | `ipaddress`, in-memory store |
-| `bookstack-integration/widget.html` | Embeddable chat bubble | Vanilla JS, ~600 LOC |
-| `scripts/kb_admin.py` | Admin CLI (upload, list, delete, health) | `click`-style argparse |
+| `chatbot/chat/routes/api.py` | Widget query endpoint, guarded by allow-list and rate limit | Flask |
+| `chatbot/chat/widget_service.py` | Prompt assembly and session handling | Flask |
+| `chatbot/utils/rate_limiter.py` | IP allow-list, sliding-window rate limit | `ipaddress`, in-memory store |
+| `bookstack-integration/widget.html` | Embeddable chat bubble | Vanilla JS, no build step |
+| `scripts/kb_admin.py` | Admin CLI (documents, bulk, index, stats, maintenance) | `argparse` subcommands |
 
 ## Documentation
 
@@ -255,16 +261,16 @@ bookstack-rag-chatbot/
 | Docker | 20.10+ with Compose v2 | latest stable |
 | CPU | 1 vCPU | 2 vCPU |
 | RAM | 3 GB | 4 GB |
-| LLM provider | Azure OpenAI or local Ollama | Azure OpenAI (most reliable for production) |
+| LLM provider | Azure OpenAI or local Ollama | Azure OpenAI |
 
-CPU/RAM scales with corpus size — 3 GB covers wikis up to ~2 000 pages comfortably.
+CPU and RAM scale with corpus size. The compose file caps the chatbot container at 2 vCPU and 4 GB with a 512 MB reservation; BookStack and MariaDB run without limits.
 
 ## Compatibility
 
 **Fully supported:**
 
-- Ubuntu 22.04 / 24.04 LTS, Debian 11 / 12 — x86_64 and ARM64
-- Raspberry Pi 5 (8 GB) with an external SSD — for small wikis
+- Ubuntu 22.04 / 24.04 LTS, Debian 11 / 12, x86_64 and ARM64
+- Raspberry Pi 5 (8 GB) with an external SSD, for small wikis
 
 **Should work** (untested):
 
@@ -274,35 +280,33 @@ CPU/RAM scales with corpus size — 3 GB covers wikis up to ~2 000 pages comfort
 
 ## Real-World Results
 
-Running in production at a small business since October 2025:
+Measured on the production deployment at a small business, running since October 2025 on Azure OpenAI `gpt-4o-mini`:
 
 - ~150 wiki pages indexed
 - ~25 chat queries per business day
-- Median end-to-end response time: 1.8 s (Azure OpenAI `gpt-4o-mini`)
-- Zero RAG-index corruption incidents
-- Cost: under €10 / month in LLM calls
-- Container resource usage: ~250 MB RSS, <5 % CPU at idle
+- Median end-to-end response time: 1.8 s (question in the widget to answer rendered)
+- No index rebuild has been needed since the deployment went live
+- Cost: under €10 per month in LLM calls
+- Container resource usage: ~250 MB RSS and below 5 % CPU at idle
+
+These numbers describe one deployment on one corpus. They are the order of magnitude to expect, not a benchmark.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
 
 ## Author
 
 Marc Allgeier ([@fidpa](https://github.com/fidpa))
 
-**Why I built this**: I needed a wiki our small team would actually use, and "great content with bad search" was killing adoption. Off-the-shelf chatbots either wanted our whole knowledge base uploaded to a third party, or pretended to be drop-in but came as a SaaS bundle. So I built the smallest thing that could work — one Flask service, one SQLite database, one widget — and ran it next to BookStack for a few months. It worked. This repo is that exact setup, with the company-specific bits stripped out.
+**Why I built this**: the off-the-shelf options either wanted our knowledge base uploaded to a third party, or sold themselves as drop-in and arrived as a SaaS bundle. So I built the smallest thing that could work, one Flask service and one SQLite database and one widget, and ran it next to BookStack for a few months. It held up. This repo is that setup.
 
 ## See Also
 
-- [step-ca-internal-pki](https://github.com/fidpa/step-ca-internal-pki) — Internal PKI for trusted HTTPS without browser warnings
-- [ubuntu-server-security](https://github.com/fidpa/ubuntu-server-security) — Security-hardening components for self-hosted servers
-- [bash-production-toolkit](https://github.com/fidpa/bash-production-toolkit) — Logging, alerts, and secure-file utilities used by my other repos
+- [step-ca-internal-pki](https://github.com/fidpa/step-ca-internal-pki): internal PKI for trusted HTTPS without browser warnings
+- [ubuntu-server-security](https://github.com/fidpa/ubuntu-server-security): security-hardening components for self-hosted servers
+- [bash-production-toolkit](https://github.com/fidpa/bash-production-toolkit): logging, alerts, and secure-file utilities used by my other repos
 
 ## Credits
 
-Built on top of [BookStack](https://www.bookstackapp.com/) (MIT) and [linuxserver.io's BookStack image](https://docs.linuxserver.io/images/docker-bookstack/) (GPLv3 for the container image, not the BookStack code).
-
----
-
-**Production-tested since October 2025** | Flask + SQLite FTS5 + Docker | One widget, one wiki, one chatbot.
+Built on top of [BookStack](https://www.bookstackapp.com/) (MIT) and [linuxserver.io's BookStack image](https://docs.linuxserver.io/images/docker-bookstack/) (GPLv3 for the container image, not for the BookStack code).

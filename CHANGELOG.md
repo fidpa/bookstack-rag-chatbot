@@ -7,6 +7,175 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-29: Wiki pages reach the answer, and deleting one removes it from the index
+
+### Fixed
+- **Deleting a chapter or a book clears its pages from the index.** Every `chapter_*`
+  event called `sync_chapter()` and every `book_*` event called `sync_book()`, so a
+  delete ran the same code as a rename: the API returns nothing for an item that is
+  gone, the method logged `not found`, and the pages stayed searchable. The chatbot
+  could cite a page that no longer existed, which for a wiki is the case where deletion
+  usually mattered. `remove_chapter_from_index()` and `remove_book_from_index()` delete
+  by the `book_id` and `chapter_id` columns `sync_page()` already records, so they work
+  without the API; the FTS tables follow through the existing `AFTER DELETE` triggers.
+- **Wiki content reaches the model again.** `HybridSearchService` searches the
+  `bookstack_*` tables and `ResultConverters` builds a virtual `KnowledgeDocument` per
+  hit, but `ChunkSelectionStrategy.build_context` looked every document up in
+  `kb_chunks` by `doc_id`. A wiki hit carries a string id such as `bookstack_42_page`
+  and has no row there, so it contributed nothing and the assembled context held
+  knowledge-base documents only. Wiki hits are now rendered from the snippet the search
+  already produced.
+- **A wiki page no longer takes two of the three context slots.**
+  `search_bookstack_content` and `search_bookstack_chunks` find the same page under
+  different synthetic ids. `build_context` now groups on the underlying BookStack item,
+  and drops an excerpt a document already carries verbatim.
+- **The current page reaches the context.** `ChatContextBuilder` read
+  `bookstack_context["content"]` while the widget sends the field as `page_content`, so
+  the branch never produced anything. The 2000-character limit is now the named constant
+  `PAGE_CONTEXT_CHARS` instead of a literal inside an f-string.
+- **Context ordering was inverted.** `abs()` on the FTS5 `rank` turned "lower is better"
+  into "higher is better", so the weakest chunks sorted to the front and were the ones
+  kept when the 3000-token budget ran out. Both sources now share one convention: FTS5
+  `rank` for knowledge-base chunks, `-relevance_score` for wiki hits.
+- **FTS5 `<mark>` tags no longer travel into the prompt.** `snippet()` wraps matched
+  terms in them; they are stripped before the text is handed to the model.
+- **The stale chunk limit in `chatbot/chat/widget_service.py`.** The comment claimed the
+  widget transmits up to 3000 characters of page content;
+  `getEnhancedBookStackContext()` truncates at 20000.
+
+### Added
+- **`chatbot/resync.py`, a repair path for a drifted index.** `sync_all()` existed but
+  nothing called it, so an index that had fallen out of step with BookStack could not be
+  rebuilt. The script ships in the container image and takes its credentials from the
+  environment already there:
+  `docker compose exec chatbot python resync.py --full-resync`. `--dry-run` reports what
+  the index holds and writes nothing; `--no-prune` adds and updates without deleting.
+- **`sync_all()` prunes what BookStack no longer reports**, which is what actually
+  repairs drift, and reports honest counts: it used to promise `chapters` and `pages` in
+  its statistics dict and only ever increment `books`. Pruning runs only after a walk
+  that finished without errors and returned content, so an unreachable API leaves the
+  index alone instead of emptying it.
+- **`sync_book()`, `sync_chapter()` and `sync_page()` take an optional `seen` set**
+  that collects the `(id, type)` pairs a walk touched. That set is what the prune step
+  measures against; the webhook path ignores the parameter.
+
+### Removed
+- **The dead BookStack fallback in `ChatContextBuilder`.** It imported
+  `BookStackSyncService` from `chatbot/bookstack/sync_service.py`, where the class is
+  named `ContentSyncService`, so the import always failed and the branch never ran. It
+  called a `search_content()` that does not exist, read a `content` key the real query
+  returns no column for, and passed the raw user message into an FTS5 `MATCH`. The
+  hybrid search covers the same ground properly, so the branch is gone rather than
+  repaired.
+- **`ChatContextBuilder.create_context_message()`**, dead since the widget-only rewrite.
+  Nothing called it, and it carried the last German-language system prompt.
+
+### Changed
+- **The README states what the code does, along the rules of README_QUALITY_STANDARDS.**
+  Four claims did not hold: `chatbot/security/` is a directory that does not exist (the
+  allow-list and the rate limit live in `chatbot/utils/rate_limiter.py`), the widget was
+  given as "~600 LOC" while `bookstack-integration/widget.html` counts 711 lines, the
+  CPU and memory limits in `docker/docker-compose.yml` apply to the chatbot container
+  only and not to all three services, and the "pluggable storage" that would let a
+  Postgres backend be "dropped in" has no seam behind it: no `KnowledgeBaseService`
+  interface exists anywhere in `chatbot/`, so the four knowledge-base services would
+  have to be rewritten. The feature bullet is gone and the limitation is now named.
+- **Three boundaries are named next to the strengths.** An empty `ALLOWED_VPN_IPS`
+  admits every source and `.env.example` ships it empty; the HMAC path in
+  `chatbot/bookstack/webhooks.py` is present and opt-in via `BOOKSTACK_WEBHOOK_SECRET`
+  rather than absent; the 10 000-page figure is an estimate from FTS5's behaviour, while
+  the deployment the numbers come from indexes about 150 pages. Provider selection now
+  says that Azure needs `AZURE_OPENAI_ENDPOINT` as well as the API key, and the two
+  German `ValueError` strings in `chatbot/llm/factory.py` are declared.
+- **`docs/ARCHITECTURE.md` and `docs/RAG_DESIGN.md` no longer promise an interface that
+  is not there.** Both described the Postgres move as implementing a
+  `KnowledgeBaseService`; the name appears nowhere in `chatbot/`. Both now say what the
+  move costs, namely rewriting `StorageService`, `IndexingService`, `SearchService` and
+  `ContextService`, with extracting the interface as step zero, and the row in "Where to
+  Modify What" says the same. The `LLMProvider` block in `docs/ARCHITECTURE.md` now
+  carries the signatures of `chatbot/llm/base.py` rather than a tidied-up version of
+  them, and the ~10k-document latency column is labelled as the estimate it is.
+- **The ten documents under `docs/` describe the code that is there.** The pass found
+  invented interfaces in four of them. `docs/KB_ADMIN_CLI.md` documented a CLI that does
+  not exist: subcommand `document` instead of `documents`, positional file arguments
+  instead of `--file`, `--collection`, `--force` and `--verbose` flags that were never
+  defined, a `debug search` command, `--format ids`, and UUID document IDs where
+  `--id` is `type=int`. It is rewritten from the actual `--help` of all five subcommand
+  groups, and now states that `scripts/` is not in the container image (the build
+  context is `../chatbot`), so the documented
+  `docker compose exec chatbot python3 /app/scripts/kb_admin.py` could not have run, and
+  that `PYTHONPATH=chatbot` is required on the host.
+- **`docs/WIDGET_INTEGRATION.md` no longer documents a configuration surface.** The
+  `window.KnowledgeBotChat.config` object, the keys `position`, `accent`, `startMessage`,
+  `apiBase`, `placeholder` and `closeLabel`, the `--kb-*` CSS variables and the
+  `data-knowledgebot-disabled` attribute are all absent from
+  `bookstack-integration/widget.html`, which assigns `window.KnowledgeBotChat` at load
+  and would overwrite any pre-set config anyway. The page now says where each literal
+  sits, describes how `getApiUrl()` derives the endpoint from `window.location`, and
+  drops the "embed elsewhere" recipe that loaded the file through `innerHTML`, which
+  does not execute script elements.
+- **`docs/SECURITY.md` claimed three prompt-injection mitigations that do not exist.**
+  There are no delimiters around the retrieved context, no instruction to treat it as
+  data, and no check that an answer cites a source; `widget_service.py` interpolates
+  `combined_context` into a system message verbatim. The section now says so and names
+  what would raise the bar. Added in the same pass: `SECRET_KEY` falls back to a literal
+  published in this repository rather than failing startup, `/webhook/bookstack/test`
+  answers unauthenticated, prompts and messages are logged at `INFO`, and the widget's
+  `textContent` assignment is the real XSS defence that had gone unmentioned. Anthropic
+  is gone from the provider list; the code dropped it.
+- **`docs/BOOKSTACK_WEBHOOKS.md` describes the three handler branches, not thirteen.**
+  The per-event action column claimed behaviour the code does not have: every
+  `chapter_*` event calls `sync_chapter()` and every `book_*` event calls `sync_book()`,
+  so `chapter_delete` and `book_delete` remove nothing from the index. The full-resync
+  recipe invoked `python -m chatbot.bookstack.sync_service --full-resync`, which has no
+  `__main__` block and no CLI; `sync_all()` exists and nothing calls it. The manual test
+  payload used `related_item` where the handler reads `related.<type>.id`.
+- **`docs/RAG_DESIGN.md` prompt-assembly section is replaced by the real prompt.** The
+  documented `<SOURCES>` block with numbered source URIs does not exist; the context is
+  built by `ChunkSelectionStrategy.build_context` with German section labels, three
+  documents at three chunks and 3000 tokens, and no URLs at all. The page also records
+  that four of the seven strategies are conditional, that the two BookStack searches
+  share the `KEYWORD_OR` and `CHUNK_BASED` buckets, that `kb_chunks_fts` indexes one
+  column rather than three, and and how wiki content actually reaches the
+  context now that the retrieval bugs listed under Fixed are repaired.
+- **`docs/CONFIGURATION.md` covers the variables it claimed to cover.**
+  `CHATBOT_SYSTEM_PROMPT`, `DATABASE_PATH` and `BOOKSTACK_API_URL` were missing;
+  `SECRET_KEY` was listed as required when it has a fallback; `ALLOWED_VPN_IPS` did not
+  say that a non-empty list with no parseable CIDR denies everything; the upload limits
+  and accepted extensions were absent; and the `#why-sqlite` anchor did not resolve
+  against its heading.
+- **`docs/SETUP.md` and `docs/TROUBLESHOOTING.md` give commands that run.** The demo
+  loader needs `requests`; the reindex example named `document reindex --all` for what
+  is `bulk reindex --force`; the memory knob is `deploy.resources.limits.memory`, not
+  `mem_limit`; there is no `widget.js` to 404 on and no `search` subcommand; and the
+  claim that the chatbot "fails fast on a missing env var" is the opposite of what
+  `config.py` does.
+- **Typography across `docs/`.** 54 em dashes and three en dashes replaced without `--`
+  inserts, box-drawing diagrams untouched.
+- **Quick Start step 6 runs as written.** `samples/load-samples.py` reads its BookStack
+  credentials from the environment and imports `requests`; the step now installs the
+  dependency and sources `.env` before calling the loader.
+- **Typography and prose follow the release-message rules.** The 36 em dashes and the
+  one en dash are replaced without `--` inserts, the box-drawing diagram stays. The
+  `**The Problem**:` template, the doubled production-tested claim and the three
+  repetitions of the pgvector sentence are gone.
+
+### Upgrade notes
+
+No reindex is required: chunking, the FTS5 schema and the environment variables are
+unchanged, and the retrieval fixes take effect on the existing index.
+
+One repair is worth running once. Chapters and books deleted under v0.1.4 or earlier
+left their pages in the index, and nothing removed them retroactively. Until you clear
+them, the chatbot can still cite a page that no longer exists:
+
+    docker compose -f docker/docker-compose.yml exec chatbot python resync.py --dry-run
+    docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+
+The second command rebuilds the index from the BookStack API and drops what BookStack
+no longer reports. It writes to the same SQLite file as the running app, so pick a quiet
+moment.
+
 ## [0.1.4] - 2026-08-28: Bookshelf webhooks no longer report work they never did
 
 Three of the sixteen events the webhook endpoint accepted had no branch behind them.

@@ -7,7 +7,7 @@ overlap-aware chunking for retrieval.
 import os
 import logging
 import sqlite3
-from typing import List, Dict
+from typing import List, Dict, Optional, Set, Tuple
 from html import unescape
 import re
 
@@ -193,26 +193,47 @@ class ContentSyncService:
 
         return text.strip()
 
-    def sync_all(self) -> Dict[str, int]:
+    def sync_all(self, prune: bool = True) -> Dict[str, int]:
         """
-        Sync all BookStack content
+        Walk the whole BookStack API and reindex everything.
+
+        This is the repair path for an index that has drifted, for instance after
+        webhooks failed silently for a while, or after a chapter was deleted before
+        v0.1.5 taught the endpoint to remove its pages.
+
+        Args:
+            prune: Also delete index rows for content BookStack no longer reports.
+                   Set False to add and update only.
 
         Returns:
             Statistics dict with counts
         """
-        stats = {"books": 0, "chapters": 0, "pages": 0, "errors": 0}
+        stats = {"books": 0, "chapters": 0, "pages": 0, "removed": 0, "errors": 0}
+        seen: Set[Tuple[int, str]] = set()
 
         try:
-            # Get all books
             books = self.client.get_all_books()
 
             for book in books:
                 try:
-                    self.sync_book(book["id"])
+                    self.sync_book(book["id"], seen=seen)
                     stats["books"] += 1
                 except Exception as e:
                     logger.error(f"Error syncing book {book['id']}: {e}")
                     stats["errors"] += 1
+
+            stats["chapters"] = sum(1 for _, t in seen if t == "chapter")
+            stats["pages"] = sum(1 for _, t in seen if t == "page")
+
+            # Prune only after a clean walk: if fetching books failed, `seen` is
+            # empty or partial and pruning would empty the index instead of fixing it.
+            if prune and not stats["errors"] and seen:
+                stats["removed"] = self.prune_index(seen)
+            elif prune:
+                logger.warning(
+                    "Skipping prune: the sync did not complete cleanly, so the "
+                    "set of live content is not trustworthy"
+                )
 
             logger.info(f"Sync completed: {stats}")
             return stats
@@ -222,12 +243,13 @@ class ContentSyncService:
             stats["errors"] += 1
             return stats
 
-    def sync_book(self, book_id: int):
+    def sync_book(self, book_id: int, seen: Optional[Set[Tuple[int, str]]] = None):
         """
         Sync a specific book and all its content
 
         Args:
             book_id: BookStack book ID
+            seen: Optional set that collects the (id, type) pairs touched
         """
         try:
             book = self.client.get_book(book_id)
@@ -245,23 +267,29 @@ class ContentSyncService:
                 tags=book.get("tags", []),
             )
 
+            if seen is not None:
+                seen.add((book["id"], "book"))
+
             # Sync chapters
             for chapter in book.get("chapters", []):
-                self.sync_chapter(chapter["id"])
+                self.sync_chapter(chapter["id"], seen=seen)
 
             # Sync direct pages
             for page in book.get("pages", []):
-                self.sync_page(page["id"])
+                self.sync_page(page["id"], seen=seen)
 
         except Exception as e:
             logger.error(f"Error syncing book {book_id}: {e}")
 
-    def sync_chapter(self, chapter_id: int):
+    def sync_chapter(
+        self, chapter_id: int, seen: Optional[Set[Tuple[int, str]]] = None
+    ):
         """
         Sync a specific chapter and its pages
 
         Args:
             chapter_id: BookStack chapter ID
+            seen: Optional set that collects the (id, type) pairs touched
         """
         try:
             chapter = self.client.get_chapter(chapter_id)
@@ -280,19 +308,23 @@ class ContentSyncService:
                 tags=chapter.get("tags", []),
             )
 
+            if seen is not None:
+                seen.add((chapter["id"], "chapter"))
+
             # Sync pages in chapter
             for page in chapter.get("pages", []):
-                self.sync_page(page["id"])
+                self.sync_page(page["id"], seen=seen)
 
         except Exception as e:
             logger.error(f"Error syncing chapter {chapter_id}: {e}")
 
-    def sync_page(self, page_id: int):
+    def sync_page(self, page_id: int, seen: Optional[Set[Tuple[int, str]]] = None):
         """
         Sync a specific page
 
         Args:
             page_id: BookStack page ID
+            seen: Optional set that collects the (id, type) pairs touched
         """
         try:
             page = self.client.get_page(page_id)
@@ -311,6 +343,9 @@ class ContentSyncService:
                 chapter_id=page.get("chapter_id"),
                 tags=page.get("tags", []),
             )
+
+            if seen is not None:
+                seen.add((page["id"], "page"))
 
         except Exception as e:
             logger.error(f"Error syncing page {page_id}: {e}")
@@ -492,6 +527,119 @@ class ContentSyncService:
 
             conn.commit()
             logger.info(f"Removed page {page_id} from index (content and chunks)")
+
+    def remove_chapter_from_index(self, chapter_id: int) -> int:
+        """
+        Remove a chapter and every page inside it from the index.
+
+        The BookStack API cannot help here: by the time the chapter_delete webhook
+        arrives, the chapter is gone and get_chapter() returns nothing. The pages are
+        found through the chapter_id column that sync_page() records instead.
+
+        Args:
+            chapter_id: BookStack chapter ID
+
+        Returns:
+            Number of content rows removed (chunks follow via the delete triggers)
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "DELETE FROM bookstack_chunks WHERE chapter_id = ?", (chapter_id,)
+            )
+            cursor.execute(
+                "DELETE FROM bookstack_chunks WHERE bookstack_id = ? AND content_type = ?",
+                (chapter_id, "chapter"),
+            )
+            cursor.execute(
+                "DELETE FROM bookstack_content WHERE chapter_id = ?", (chapter_id,)
+            )
+            removed = cursor.rowcount
+            cursor.execute(
+                "DELETE FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
+                (chapter_id, "chapter"),
+            )
+            removed += cursor.rowcount
+
+            conn.commit()
+            logger.info(
+                f"Removed chapter {chapter_id} and its pages from index "
+                f"({removed} content rows)"
+            )
+            return removed
+
+    def remove_book_from_index(self, book_id: int) -> int:
+        """
+        Remove a book, its chapters and all its pages from the index.
+
+        Args:
+            book_id: BookStack book ID
+
+        Returns:
+            Number of content rows removed (chunks follow via the delete triggers)
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("DELETE FROM bookstack_chunks WHERE book_id = ?", (book_id,))
+            cursor.execute(
+                "DELETE FROM bookstack_chunks WHERE bookstack_id = ? AND content_type = ?",
+                (book_id, "book"),
+            )
+            cursor.execute(
+                "DELETE FROM bookstack_content WHERE book_id = ?", (book_id,)
+            )
+            removed = cursor.rowcount
+            cursor.execute(
+                "DELETE FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
+                (book_id, "book"),
+            )
+            removed += cursor.rowcount
+
+            conn.commit()
+            logger.info(
+                f"Removed book {book_id} and its contents from index "
+                f"({removed} content rows)"
+            )
+            return removed
+
+    def prune_index(self, keep: Set[Tuple[int, str]]) -> int:
+        """
+        Delete index rows for content BookStack no longer reports.
+
+        Args:
+            keep: (bookstack_id, type) pairs seen during a full sync
+
+        Returns:
+            Number of content rows removed
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT bookstack_id, type FROM bookstack_content")
+            stale = [
+                (row["bookstack_id"], row["type"])
+                for row in cursor.fetchall()
+                if (row["bookstack_id"], row["type"]) not in keep
+            ]
+
+            for bookstack_id, content_type in stale:
+                cursor.execute(
+                    "DELETE FROM bookstack_chunks "
+                    "WHERE bookstack_id = ? AND content_type = ?",
+                    (bookstack_id, content_type),
+                )
+                cursor.execute(
+                    "DELETE FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
+                    (bookstack_id, content_type),
+                )
+
+            conn.commit()
+            if stale:
+                logger.info(f"Pruned {len(stale)} stale rows from the index")
+            return len(stale)
 
     def search(
         self, query: str, limit: int = 10, use_chunks: bool = None

@@ -256,7 +256,8 @@ def generate_widget_response(
                 context_parts.append(f"Page title: {bookstack_context['title']}")
 
             if bookstack_context.get("page_content"):
-                # Use the full transmitted content (up to 3000 chars)
+                # The widget truncates at 20000 characters before sending; see
+                # getEnhancedBookStackContext() in bookstack-integration/widget.html.
                 content_preview = bookstack_context["page_content"]
                 context_parts.append(f"Page content: {content_preview}")
 

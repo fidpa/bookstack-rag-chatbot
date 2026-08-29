@@ -83,6 +83,10 @@ media/
 *.db
 *.sqlite-journal
 *.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
 
 # -----------------------------------------------------------------------------
 # Logs

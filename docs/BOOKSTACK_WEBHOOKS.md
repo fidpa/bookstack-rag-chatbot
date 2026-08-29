@@ -1,41 +1,65 @@
 # BookStack Webhooks
 
-The chatbot keeps its RAG index in sync with BookStack via webhooks. This page documents the 13 events the chatbot listens to, what each one does, and how to configure them.
+The chatbot keeps its RAG index in sync with BookStack via webhooks. This page
+documents the 13 events it listens to, what the handler actually does with each, and
+how to configure them.
 
 ## Configuring Webhooks in BookStack
-
-In BookStack:
 
 1. Sign in as admin.
 2. Go to **Settings → Webhooks → Create Webhook**.
 3. Set:
    - **Name**: `chatbot`
    - **Endpoint**: `http://chatbot:8888/webhook/bookstack` (Docker-internal hostname)
-   - **Events**: select all 13 events listed below.
+   - **Events**: select the 13 events listed below.
 4. Save.
 
-> **Note**: BookStack v25.07 does **not** sign webhooks with HMAC. The chatbot enforces authenticity via the IP allow-list — make sure your reverse proxy strips spoofed source IPs. See [SECURITY.md](SECURITY.md).
+> **Authenticity**: BookStack v25.07 does not sign webhook payloads, so the endpoint's
+> protection is the IP allow-list; make sure your reverse proxy strips spoofed source
+> IPs. `chatbot/bookstack/webhooks.py` does carry an HMAC-SHA256 check, and setting
+> `BOOKSTACK_WEBHOOK_SECRET` switches it on, but it then **requires** an
+> `X-BookStack-Signature` header that stock BookStack never sends. Leave the variable
+> empty unless you run a build that signs. See [SECURITY.md](SECURITY.md).
 
 ## The 13 Events
 
-BookStack v25.07 emits underscore-cased event names. The list below matches
-`RELEVANT_EVENTS` in `chatbot/bookstack/webhooks.py`.
+The list matches `RELEVANT_EVENTS` in `chatbot/bookstack/webhooks.py`. What happens
+next does not branch per event: the handler tests the event name for the substrings
+`page`, `chapter` and `book`, in that order, and calls one of three methods on
+`ContentSyncService`. The ID comes from `related.page.id`, `related.chapter.id` or
+`related.book.id` in the payload; when it is missing, the handler does nothing and
+still answers `processed`.
 
-| Event | Triggered when… | RAG-index action |
+| Event | Handler branch | What runs |
 |---|---|---|
-| `page_create` | A page is created | Fetch the page, chunk, index |
-| `page_update` | A page's content or metadata changes | Re-fetch, re-chunk, replace |
-| `page_delete` | A page is deleted | Remove all chunks for that page |
-| `page_move` | A page is moved between books/chapters | Update parent metadata |
-| `page_restore` | A page is restored from the bin | Treat as `page_create` |
-| `chapter_create` | A chapter is created | Index chapter metadata (used for source URLs) |
-| `chapter_update` | A chapter is renamed or its content metadata changes | Update metadata; re-index descendant pages |
-| `chapter_delete` | A chapter is deleted | Remove descendant pages from the index |
-| `chapter_move` | A chapter is moved between books | Update parent links; re-index descendant pages |
-| `book_create` | A book is created | Index book metadata |
-| `book_update` | A book is renamed or metadata changes | Update metadata; re-index descendant pages |
-| `book_delete` | A book is deleted | Remove descendant pages from the index |
-| `book_sort` | A book's chapter/page ordering changes | Refresh parent links |
+| `page_create` | page | `sync_page(id)`: fetch, clean, chunk, upsert |
+| `page_update` | page | `sync_page(id)` |
+| `page_move` | page | `sync_page(id)` |
+| `page_restore` | page | `sync_page(id)` |
+| `page_delete` | page | `remove_page_from_index(id)` |
+| `chapter_create` | chapter | `sync_chapter(id)`: store chapter metadata, then `sync_page` for every page in it |
+| `chapter_update` | chapter | `sync_chapter(id)` |
+| `chapter_move` | chapter | `sync_chapter(id)` |
+| `chapter_delete` | chapter | `remove_chapter_from_index(id)`: the chapter and every page carrying its `chapter_id` |
+| `book_create` | book | `sync_book(id)`: store book metadata, then every chapter and every direct page |
+| `book_update` | book | `sync_book(id)` |
+| `book_sort` | book | `sync_book(id)` |
+| `book_delete` | book | `remove_book_from_index(id)`: the book, its chapters and every page carrying its `book_id` |
+
+Each branch also invalidates the API client's cache entry for the affected item.
+
+### Deleting a chapter or a book
+
+All three delete events remove content. The API is no help once the item is gone, so
+the removal works off the index itself: `sync_page()` records `book_id` and `chapter_id`
+with every page, and the two removal methods delete by those columns. The FTS tables
+follow through the `AFTER DELETE` triggers on `bookstack_content` and
+`bookstack_chunks`.
+
+Before v0.1.5 this did not happen: `chapter_delete` and `book_delete` ran the same sync
+as a rename, found nothing, and left the pages searchable, so the chatbot could cite a
+page that no longer existed. An index that drifted that way is repaired by a full
+resync, below.
 
 ### Bookshelf events are not in the list
 
@@ -53,61 +77,85 @@ BookStack edit
 BookStack webhook  ──HTTP POST──►  chatbot /webhook/bookstack
                                         │
                                         ▼
-                             Validate event type & IP
+                             IP allow-list, then HMAC if configured
                                         │
                                         ▼
-                              For page_*, book_*, chapter_*:
+                             Event in RELEVANT_EVENTS?  ──no──►  200 {"status":"ignored"}
+                                        │ yes
+                                        ▼
+                             Read related.<type>.id from the payload
                                         │
                                         ▼
-                              GET BookStack API for affected content
+                             GET BookStack API for the affected content
                                         │
                                         ▼
-                              Chunk → upsert into bookstack_chunks_fts
+                             Chunk → upsert into bookstack_chunks_fts
                                         │
                                         ▼
-                              200 OK
+                             200 {"status":"processed"}
 ```
 
-The chatbot returns 200 even if it decides to ignore the event, so BookStack doesn't retry.
+`processed` means the handler reached the end without an exception, not that the index
+changed. A payload with an unexpected shape, a missing ID or an API fetch that comes
+back empty all end here. Only an unhandled exception produces a 500.
 
 ## Failure Modes
 
 ### "Webhook delivery failed" in BookStack logs
 
-Most common causes:
-
 - The chatbot container is not running. Check `docker compose ps`.
 - The Docker network is not shared. Both services must be on `bookstack-network`.
-- The chatbot rejected the IP. Check chatbot logs for "denied by IP allow-list".
+- The chatbot rejected the source IP. Look for `Denied <ip> (not in ALLOWED_VPN_IPS)` in
+  the chatbot log.
+- `BOOKSTACK_WEBHOOK_SECRET` is set against a BookStack that does not sign. Every
+  delivery then gets a 401 and `Invalid webhook signature from …` in the log. Clear the
+  variable.
 
-### Webhook fires but index doesn't update
+### Webhook arrives, index does not change
 
-- The BookStack API token in `.env` is missing or invalid. The chatbot can receive the webhook but cannot fetch the affected page back.
-- Fix: regenerate the token in BookStack and restart `chatbot`.
+The endpoint answers `processed` in this case too, so the log is the only witness.
+
+- The BookStack API token in `.env` is missing or invalid: the chatbot receives the
+  event but cannot fetch the page back. Regenerate the token and restart `chatbot`.
+- The payload had no `related.<type>.id`. Custom senders and hand-rolled test requests
+  usually trip on this.
 
 ### Index drifts from BookStack over time
 
-This can happen if webhooks were failing silently for a while. You can rebuild the index from scratch:
+Webhooks that failed silently for a while, or content deleted under an older version,
+leave the index out of step. `chatbot/resync.py` walks the whole BookStack API and
+rebuilds it:
 
 ```bash
+# What does the index hold right now? Reads only.
 docker compose -f docker/docker-compose.yml exec chatbot \
-  python -m chatbot.bookstack.sync_service --full-resync
+    python resync.py --dry-run
+
+# Reindex everything and drop rows for content BookStack no longer reports.
+docker compose -f docker/docker-compose.yml exec chatbot \
+    python resync.py --full-resync
 ```
 
-This walks the entire BookStack API and re-indexes everything. Safe to run anytime; takes ~1 minute per 1 000 pages.
+The pruning step is what repairs a drifted index, and it is deliberately cautious: it
+runs only after a walk that finished without errors and returned content. A failed API
+call therefore leaves the index untouched rather than emptying it, because "BookStack
+reports nothing" and "BookStack is unreachable" look the same from here. Pass
+`--no-prune` to add and update only.
+
+The command writes to the same SQLite file as the running app, so prefer a quiet moment.
+It exits non-zero when the walk hit errors.
 
 ## Testing Webhooks Manually
 
-Send a fake event from the host shell:
+The payload has to carry the ID where the handler looks for it, and the request has to
+come from an allowed IP:
 
 ```bash
 curl -X POST http://localhost:8888/webhook/bookstack \
   -H 'Content-Type: application/json' \
-  -d '{
-    "event": "page_update",
-    "text": "Manual test",
-    "related_item": {"id": 1, "name": "Test"}
-  }'
+  -d '{"event": "page_update", "related": {"page": {"id": 1}}}'
 ```
 
-The chatbot's logs should show it received and processed the event.
+A `{"status":"processed"}` response only says the handler ran; check the chatbot log for
+the sync itself. To verify connectivity alone, without a payload and without the
+allow-list, `GET /webhook/bookstack/test` answers with the accepted event list.
