@@ -5,30 +5,53 @@ Two mechanisms:
 - `require_allowed_ip`  : enforces the ALLOWED_VPN_IPS allow-list (CIDRs).
 - `RateLimiter.ip_limit`: sliding-window per-IP request cap, configurable
                           via RATE_LIMIT_PER_MINUTE.
+
+Both key on the client address Flask reports as request.remote_addr. Behind a
+reverse proxy that is the proxy's address unless TRUSTED_PROXY_HOPS says how
+many proxies to look through (see apply_proxy_fix).
 """
 
 import ipaddress
 import logging
 import os
+import threading
 import time
 from functools import wraps
 
-from flask import jsonify, request, session
+from flask import jsonify, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 logger = logging.getLogger(__name__)
 
 
-def _client_ip() -> str:
-    """Return the originating client IP, honouring a single X-Forwarded-For hop.
+def trusted_proxy_hops() -> int:
+    """TRUSTED_PROXY_HOPS as a non-negative int (default 0)."""
+    try:
+        return max(0, int(os.getenv("TRUSTED_PROXY_HOPS", "0")))
+    except ValueError:
+        logger.warning("TRUSTED_PROXY_HOPS is not an integer, using 0")
+        return 0
 
-    SECURITY.md tells operators to strip X-Forwarded-For at the edge proxy when
-    the proxy is reachable from the public internet; this helper trusts the
-    first hop only.
+
+def apply_proxy_fix(app):
     """
-    forwarded = request.environ.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.environ.get("REMOTE_ADDR", "")
+    Take the client address from X-Forwarded-For when behind trusted proxies.
+
+    With TRUSTED_PROXY_HOPS=N, ProxyFix uses the N-th entry from the *right* of
+    X-Forwarded-For, which is the one the outermost trusted proxy appended. The
+    entries to its left come from the client and are ignored, so a forged
+    header no longer changes the address. With 0 (the default) the header is
+    ignored entirely: set it only when every request passes through the proxy,
+    otherwise a client talking to port 8888 directly could forge it.
+    """
+    hops = trusted_proxy_hops()
+    if hops:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=hops)
+        logger.info(f"Trusting {hops} proxy hop(s) for the client address")
+
+
+def _client_ip() -> str:
+    return request.remote_addr or ""
 
 
 def _parse_allowed_cidrs(raw: str):
@@ -52,7 +75,7 @@ def require_allowed_ip(f):
 
     Bypassed if IP_ACCESS_CONTROL is set to anything other than 'true'
     (case-insensitive). An empty ALLOWED_VPN_IPS means 'allow all' and is
-    logged once per process startup as a warning.
+    logged as a warning on the first guarded request.
     """
 
     @wraps(f)
@@ -68,7 +91,7 @@ def require_allowed_ip(f):
                     "IP_ACCESS_CONTROL=true but ALLOWED_VPN_IPS is empty "
                     "- allowing all source IPs."
                 )
-                require_allowed_ip._warned_empty = True
+                require_allowed_ip._warned_empty = True  # type: ignore[attr-defined]
             return f(*args, **kwargs)
 
         networks = _parse_allowed_cidrs(raw_cidrs)
@@ -98,10 +121,30 @@ def require_allowed_ip(f):
 
 
 class RateLimiter:
-    """Simple in-memory rate limiter"""
+    """In-memory sliding-window rate limiter, shared by all waitress threads."""
+
+    #: Seconds between sweeps that drop keys with no recent requests
+    SWEEP_INTERVAL = 60
 
     def __init__(self):
         self.requests = {}
+        self._lock = threading.Lock()
+        self._last_sweep = time.time()
+
+    def _sweep(self, now: float, window: int):
+        """Forget clients without requests in the window, so memory stays bounded."""
+        if now - self._last_sweep < self.SWEEP_INTERVAL:
+            return
+        self._last_sweep = now
+        for key in [
+            k for k, v in self.requests.items() if not v or v[-1] <= now - window
+        ]:
+            del self.requests[key]
+
+    def clear(self):
+        """Forget all recorded requests."""
+        with self._lock:
+            self.requests.clear()
 
     def limit(self, max_requests=10, window=60):
         """
@@ -119,21 +162,22 @@ class RateLimiter:
                 key = f"{client_ip}:{f.__name__}"
                 now = time.time()
 
-                # Clean old entries
-                if key in self.requests:
-                    self.requests[key] = [
-                        req for req in self.requests[key] if req > now - window
-                    ]
-                else:
-                    self.requests[key] = []
+                with self._lock:
+                    self._sweep(now, window)
+                    recent = [t for t in self.requests.get(key, []) if t > now - window]
+                    if len(recent) >= max_requests:
+                        remaining_time = max(1, int(window - (now - recent[0])))
+                        self.requests[key] = recent
+                        limited = True
+                    else:
+                        recent.append(now)
+                        self.requests[key] = recent
+                        limited = False
 
-                # Check limit
-                if len(self.requests[key]) >= max_requests:
-                    remaining_time = int(window - (now - self.requests[key][0]))
+                if limited:
                     logger.warning(
                         f"Rate limit exceeded for IP {client_ip} on {f.__name__}"
                     )
-
                     return (
                         jsonify(
                             {
@@ -145,10 +189,6 @@ class RateLimiter:
                         429,
                     )
 
-                # Add request
-                self.requests[key].append(now)
-
-                # Execute function
                 return f(*args, **kwargs)
 
             return decorated_function
@@ -169,82 +209,6 @@ class RateLimiter:
                 max_requests = 30
 
         return self.limit(max_requests=max_requests, window=window)
-
-    def authenticated_limit(self, max_requests=10, window=60):
-        """
-        Rate limit decorator for widget endpoints (no authentication required)
-        Uses session-based tracking for anonymous widget users
-        """
-
-        def decorator(f):
-            @wraps(f)
-            def decorated_function(*args, **kwargs):
-                # Use session ID as identifier for widget users
-                session_key = "rate_limit_session_id"
-                if session_key not in session:
-                    # Create a unique session identifier for rate limiting
-                    import uuid
-
-                    session[session_key] = str(uuid.uuid4())
-
-                session_id = session[session_key]
-                key = f"session_{session_id}:{f.__name__}"
-                now = time.time()
-
-                # Clean old entries
-                if key in self.requests:
-                    self.requests[key] = [
-                        req for req in self.requests[key] if req > now - window
-                    ]
-                else:
-                    self.requests[key] = []
-
-                # Check limit
-                if len(self.requests[key]) >= max_requests:
-                    remaining_time = int(window - (now - self.requests[key][0]))
-                    logger.warning(
-                        f"Rate limit exceeded for session {session_id[:8]} on {f.__name__}"
-                    )
-
-                    return (
-                        jsonify(
-                            {
-                                "success": False,
-                                "error": f"Zu viele Anfragen. Bitte warten Sie {remaining_time} Sekunden.",
-                                "retry_after": remaining_time,
-                            }
-                        ),
-                        429,
-                    )
-
-                # Add request
-                self.requests[key].append(now)
-
-                # Execute function
-                return f(*args, **kwargs)
-
-            return decorated_function
-
-        return decorator
-
-    def reset(self, session_id=None, endpoint=None):
-        """Reset rate limits for testing or admin purposes"""
-        if session_id and endpoint:
-            key = f"session_{session_id}:{endpoint}"
-            if key in self.requests:
-                del self.requests[key]
-        elif session_id:
-            # Reset all endpoints for session
-            keys_to_delete = [
-                k
-                for k in self.requests.keys()
-                if k.startswith(f"session_{session_id}:")
-            ]
-            for key in keys_to_delete:
-                del self.requests[key]
-        else:
-            # Reset all
-            self.requests.clear()
 
 
 # Global rate limiter instance

@@ -14,6 +14,7 @@ Usage:
 The script is idempotent: re-running with no flag will refuse to create duplicate
 pages and exit with a non-zero status.
 """
+
 from __future__ import annotations
 
 import argparse

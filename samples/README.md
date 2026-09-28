@@ -16,13 +16,18 @@ All content is original and released into the **public domain (CC0)**. Companies
 
 ## Loading the samples
 
-After the stack is running and BookStack has been initialised (admin account created at `http://localhost:6875`), generate an API token (My Account → API Tokens → Create Token), put the credentials into `.env`, then run:
+After the stack is running and BookStack has been initialised (admin account created at `http://localhost:6875`), generate an API token (My Account → API Tokens → Create Token), put the credentials into `.env`, then load them into your shell and run the loader (it reads the process environment, not the file):
 
 ```bash
+set -a; . ./.env; set +a
 python3 samples/load-samples.py
 ```
 
-The script creates one BookStack book called *Acme Inc. Knowledge Base* and uploads each Markdown file as a page. The chatbot's webhook listener will pick them up and index them into the RAG store within a few seconds.
+The script creates one BookStack book called *Acme Inc. Knowledge Base* and uploads each Markdown file as a page. With the webhook set up ([docs/BOOKSTACK_WEBHOOKS.md](../docs/BOOKSTACK_WEBHOOKS.md)), the chatbot indexes each page as it is created. Without one, index them in one go:
+
+```bash
+docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+```
 
 ## Removing the samples
 
@@ -30,4 +35,4 @@ The script creates one BookStack book called *Acme Inc. Knowledge Base* and uplo
 python3 samples/load-samples.py --delete
 ```
 
-This removes the book and all its pages from BookStack. The chatbot's index will be cleaned up on the next webhook event.
+This removes the book and all its pages from BookStack. The deletion itself fires `book_delete`, which removes them from the chatbot's index; without a webhook, `resync.py --full-resync` prunes them.

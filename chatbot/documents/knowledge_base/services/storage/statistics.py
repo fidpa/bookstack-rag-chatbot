@@ -44,25 +44,6 @@ def get_chunk_stats(doc_id: int) -> Dict:
                     "max_size": row["max_size"] or 0,
                 }
 
-            # Fallback: Prüfe kb_chunk_stats Tabelle
-            cursor.execute(
-                """
-                SELECT total_chunks, avg_chunk_size, min_chunk_size, max_chunk_size
-                FROM kb_chunk_stats
-                WHERE doc_id = ?
-            """,
-                (doc_id,),
-            )
-
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "total_chunks": row["total_chunks"] or 0,
-                    "avg_size": row["avg_chunk_size"] or 0,
-                    "min_size": row["min_chunk_size"] or 0,
-                    "max_size": row["max_chunk_size"] or 0,
-                }
-
             return {"total_chunks": 0, "avg_size": 0, "min_size": 0, "max_size": 0}
 
     except Exception as e:

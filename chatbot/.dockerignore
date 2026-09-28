@@ -1,0 +1,7 @@
+# Local runtime data and caches never belong in the image
+data/
+**/__pycache__/
+*.py[cod]
+*.db
+*.sqlite*
+.env

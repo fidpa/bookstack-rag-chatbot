@@ -234,35 +234,23 @@
         };
         
         // Session management using browser sessionStorage
-        let widgetSessionId = sessionStorage.getItem('knowledgebot-widget-session');
-        if (!widgetSessionId) {
-            // Generate new session ID
-            widgetSessionId = 'widget-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
-            sessionStorage.setItem('knowledgebot-widget-session', widgetSessionId);
-        }
+        // Session id issued by the server on the first answer (empty until then)
+        let widgetSessionId = sessionStorage.getItem('knowledgebot-widget-session') || '';
         
         // API configuration - Dynamic URL detection
-        function getApiBaseUrl() {
-            const hostname = window.location.hostname;
-            const protocol = window.location.protocol;
-
-            // Development: Use localhost with port 8888
-            if (hostname === 'localhost' || hostname === '127.0.0.1') {
-                return 'http://localhost:8888';
-            }
-
-            // Production: Use current origin (HTTPS via nginx proxy, no port)
-            // nginx proxies /chat/api/ to chatbot:8888
-            return `${protocol}//${hostname}`;
-        }
-
-        const API_BASE_URL = getApiBaseUrl();
+        // This page is served by the chatbot itself, so the API is same-origin.
+        const API_BASE_URL = '';
+        // Only the BookStack instance may push page context into this frame.
+        const BOOKSTACK_ORIGIN = {{ bookstack_origin|tojson }};
         const USE_ECHO_TEST = false;  // Set to true to test echo endpoint first
 
         console.log('[Widget] Using API Base URL:', API_BASE_URL);
         
         // Listen for context from parent BookStack page
         window.addEventListener('message', function(event) {
+            if (event.origin !== BOOKSTACK_ORIGIN) {
+                return;
+            }
             if (event.data && event.data.type === 'bookstack-context') {
                 bookstackContext = event.data.page || bookstackContext;
                 updateContextDisplay();
@@ -354,15 +342,15 @@
                 
                 if (data.success) {
                     // Update session ID if server provides new one
-                    if (data.session_id) {
+                    if (data.session_id && data.session_id !== widgetSessionId) {
                         widgetSessionId = data.session_id;
                         sessionStorage.setItem('knowledgebot-widget-session', widgetSessionId);
                     }
                     
                     // Add AI response
-                    addMessage(data.response || 'Keine Antwort erhalten');
+                    addMessage(data.response || 'No response received');
                 } else {
-                    addMessage('Entschuldigung, es gab einen Fehler: ' + (data.error || 'Unbekannter Fehler'));
+                    addMessage('Sorry, something went wrong: ' + (data.error || 'unknown error'));
                 }
                 
             } catch (error) {

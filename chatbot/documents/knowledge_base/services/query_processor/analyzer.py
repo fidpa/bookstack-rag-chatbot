@@ -7,7 +7,7 @@ import re
 import logging
 from typing import List, Tuple
 from .models import QueryIntent
-from .constants import GERMAN_STOPWORDS, INTENT_PATTERNS
+from .constants import STOPWORDS, INTENT_PATTERNS
 
 logger = logging.getLogger(__name__)
 
@@ -50,31 +50,26 @@ class QueryAnalyzer:
     @classmethod
     def extract_keywords(cls, query: str) -> List[str]:
         """Extrahiert wichtige Keywords aus der Query"""
-        # Tokenisierung
-        words = re.findall(r"\b[a-zA-ZäöüÄÖÜß-]+\b", query.lower())
+        # Letters of any script, digits and inner hyphens: "error 404",
+        # "wi-fi" and "Überstunden" must all survive.
+        words = re.findall(r"\w+(?:-\w+)*", query.lower(), flags=re.UNICODE)
 
         # Stopwords filtern
         keywords = []
         for word in words:
-            if len(word) >= 3 and word not in GERMAN_STOPWORDS:
+            if len(word) >= 3 and word not in STOPWORDS and word not in keywords:
                 keywords.append(word)
 
-        # Compound-Words erkennen (wichtig für Deutsch)
-        # z.B. "Team-Reflexivität" -> ["team", "reflexivität", "team-reflexivität"]
-        compound_pattern = re.findall(
-            r"\b[a-zA-ZäöüÄÖÜß]+-[a-zA-ZäöüÄÖÜß]+\b", query.lower()
-        )
+        # Hyphenated compounds also contribute their parts:
+        # "Self-Service-Portal" -> "self-service-portal", "self", "service", "portal"
+        compound_pattern = [w for w in words if "-" in w]
         for compound in compound_pattern:
             if compound not in keywords:
                 keywords.append(compound)
             # Teile auch hinzufügen
             parts = compound.split("-")
             for part in parts:
-                if (
-                    len(part) >= 3
-                    and part not in GERMAN_STOPWORDS
-                    and part not in keywords
-                ):
+                if len(part) >= 3 and part not in STOPWORDS and part not in keywords:
                     keywords.append(part)
 
         return keywords
@@ -95,7 +90,7 @@ class QueryAnalyzer:
                 i > 0
                 and clean_word
                 and clean_word[0].isupper()
-                and clean_word.lower() not in GERMAN_STOPWORDS
+                and clean_word.lower() not in STOPWORDS
             ):
                 entities.append(clean_word)
 
@@ -104,8 +99,7 @@ class QueryAnalyzer:
         special_patterns = re.findall(r"\b[A-Z]{2,}\b|\b[A-Z]\.[A-Z]\.?\b", query)
         entities.extend(special_patterns)
 
-        # Deduplizierung
-        return list(set(entities))
+        return list(dict.fromkeys(entities))
 
     @classmethod
     def categorize_terms(
@@ -133,8 +127,8 @@ class QueryAnalyzer:
             # Bei general search sind alle Keywords nice-to-have
             nice_to_have.extend(keywords)
 
-        # Deduplizierung
-        must_have = list(set(must_have))
-        nice_to_have = [term for term in set(nice_to_have) if term not in must_have]
+        # Deduplicate, keeping order so the queries built from these are stable
+        must_have = list(dict.fromkeys(must_have))
+        nice_to_have = [t for t in dict.fromkeys(nice_to_have) if t not in must_have]
 
         return must_have, nice_to_have

@@ -92,7 +92,6 @@ services:
 
       # Core
       - SECRET_KEY=${SECRET_KEY}
-      - FLASK_ENV=${FLASK_ENV:-production}
       - FLASK_DEBUG=${FLASK_DEBUG:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
@@ -102,6 +101,7 @@ services:
       - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2025-01-01-preview}
       - AZURE_OPENAI_DEPLOYMENT_NAME=${AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-4o-mini}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-}
       - ENABLE_OLLAMA_FALLBACK=${ENABLE_OLLAMA_FALLBACK:-false}
 
       # BookStack integration (over Docker bridge network)
@@ -118,6 +118,9 @@ services:
       - ALLOWED_VPN_IPS=${ALLOWED_VPN_IPS:-}
       - IP_ACCESS_CONTROL=${IP_ACCESS_CONTROL:-true}
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
+      # Set to 1 when a reverse proxy (docker/nginx-example.conf) fronts the
+      # chatbot and port 8888 is not reachable around it
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-0}
 
       # Database
       - DATABASE_PATH=/app/data/chatbot.db

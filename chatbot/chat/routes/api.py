@@ -2,7 +2,7 @@
 
 import logging
 from flask import request, jsonify
-from . import chat_bp
+from .blueprint import chat_bp
 from utils.rate_limiter import rate_limiter, require_allowed_ip
 
 logger = logging.getLogger(__name__)
@@ -27,9 +27,13 @@ def widget_chat():
         if not data:
             return jsonify({"success": False, "error": "No data received"}), 400
 
-        message = data.get("message", "").strip()
-        session_id = data.get("session_id")
-        bookstack_context = data.get("bookstack_context", {})
+        message = str(data.get("message", "")).strip()
+        # The embedded widget sends its session as a header, other clients in
+        # the body; either way only an id this server issued is honoured.
+        session_id = data.get("session_id") or request.headers.get("X-Widget-Session")
+        bookstack_context = data.get("bookstack_context") or {}
+        if not isinstance(bookstack_context, dict):
+            bookstack_context = {}
 
         if not message:
             return jsonify({"success": False, "error": "Message cannot be empty"}), 400
@@ -44,19 +48,12 @@ def widget_chat():
 
         if result["success"]:
             return jsonify(result)
-        else:
-            return jsonify(result), 400
+        return jsonify(result), 400
 
     except Exception as e:
-        logger.error(f"Widget chat endpoint error: {str(e)}")
+        logger.error(f"Widget chat endpoint error: {e}", exc_info=True)
         return (
-            jsonify(
-                {
-                    "success": False,
-                    "error": "Failed to process chat message",
-                    "details": str(e),
-                }
-            ),
+            jsonify({"success": False, "error": "Failed to process chat message"}),
             500,
         )
 

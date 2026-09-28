@@ -4,7 +4,7 @@ Verwaltet Metadaten-Operationen wie Tags und Markdown-Frontmatter
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import yaml
 import re
 
@@ -123,7 +123,7 @@ def _extract_markdown_metadata(file_path: str) -> Optional[Dict]:
                 return None
 
             # Extract relevant fields
-            result = {}
+            result: Dict[str, Any] = {}
 
             # Title
             if "title" in metadata:

@@ -6,25 +6,21 @@ Dual-RAG: BookStack + Knowledge Base Integration
 import logging
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
-# Knowledge Base integration for document RAG.
-#
 # This one service covers both sources: HybridSearchService queries the
 # bookstack_* tables alongside kb_*, so wiki pages and uploaded documents are
 # ranked and fused together rather than retrieved on separate paths.
-try:
-    from documents.knowledge_base.services import ContextService as KBContextService
-except ImportError:
-    KBContextService = None
-    logger.warning("Knowledge Base ContextService not available - KB RAG disabled")
+from documents.knowledge_base.services import ContextService as KBContextService
+
+logger = logging.getLogger(__name__)
 
 
 class ChatContextBuilder:
     """Service for building context from BookStack + Knowledge Base (Dual-RAG)"""
 
-    #: Characters of the current page kept in the context block.
-    PAGE_CONTEXT_CHARS = 2000
+    #: Characters of the current page kept in the context block. The widget
+    #: already truncates page_content at 20000 (getEnhancedBookStackContext()
+    #: in bookstack-integration/widget.html); this is the server-side bound.
+    PAGE_CONTEXT_CHARS = 20000
 
     @classmethod
     def build_combined_context(
@@ -68,24 +64,13 @@ class ChatContextBuilder:
 
         # 2. Retrieved context: knowledge-base documents and BookStack pages,
         #    searched together by the hybrid search behind ContextService.
-        if KBContextService:
-            try:
-                logger.debug(f"Searching Knowledge Base for: {user_message}")
-                kb_context = KBContextService.build_knowledge_context(
-                    user_query=user_message, max_docs=3, use_chunks=True
-                )
-
-                if kb_context:
-                    if combined_context:
-                        combined_context += "\n\n--- Retrieved Documents ---\n\n"
-                    combined_context += kb_context
-                    logger.info(
-                        f"Added Knowledge Base context ({len(kb_context)} chars)"
-                    )
-                else:
-                    logger.debug("No relevant KB documents found")
-
-            except Exception as e:
-                logger.error(f"Error searching Knowledge Base: {str(e)}", exc_info=True)
+        #    ContextService returns '' on failure or when nothing matched.
+        kb_context = KBContextService.build_knowledge_context(
+            user_query=user_message, max_docs=3
+        )
+        if kb_context:
+            if combined_context:
+                combined_context += "\n\n--- Retrieved Documents ---\n\n"
+            combined_context += kb_context
 
         return combined_context

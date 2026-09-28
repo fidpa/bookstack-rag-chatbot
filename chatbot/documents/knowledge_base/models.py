@@ -1,18 +1,19 @@
 """
-Datenbank-Modelle für die Wissensbasis
+Data model of the knowledge base
 """
 
 from datetime import datetime
-from typing import Optional, Dict
-from dataclasses import dataclass
-import hashlib
+from typing import Dict, List, Optional, Union
+from dataclasses import dataclass, field
 
 
 @dataclass
 class KnowledgeDocument:
-    """Model für ein Wissensbasis-Dokument"""
+    """An uploaded document, or a BookStack hit dressed as one by the search."""
 
-    id: Optional[int] = None
+    # int for uploaded documents; str for the virtual documents the search
+    # builds for BookStack hits (see hybrid_search.converters)
+    id: Optional[Union[int, str]] = None
     filename: str = ""
     original_filename: str = ""
     file_path: str = ""
@@ -26,9 +27,20 @@ class KnowledgeDocument:
     last_indexed: Optional[datetime] = None
     is_active: bool = True
 
+    # Set by the hybrid search on hits
+    search_snippet: str = ""
+    relevance_score: float = 0.0
+    match_type: str = ""
+    matched_chunks: int = 0
+    # Set on BookStack hits only
+    bookstack_id: Optional[int] = None
+    bookstack_type: Optional[str] = None
+    bookstack_url: Optional[str] = None
+    bookstack_chunks: List[str] = field(default_factory=list)
+
     @staticmethod
     def from_db_row(row: Dict) -> "KnowledgeDocument":
-        """Erstellt ein KnowledgeDocument aus einer Datenbankzeile"""
+        """Build from a kb_documents row."""
         return KnowledgeDocument(
             id=row["id"],
             filename=row["filename"],
@@ -52,25 +64,3 @@ class KnowledgeDocument:
             ),
             is_active=bool(row["is_active"]),
         )
-
-    def calculate_hash(self, file_content: bytes) -> str:
-        """Berechnet den SHA256 Hash des Dateiinhalts"""
-        return hashlib.sha256(file_content).hexdigest()
-
-    def get_display_size(self) -> str:
-        """Gibt die Dateigröße in lesbarem Format zurück"""
-        size = self.file_size
-        for unit in ["B", "KB", "MB", "GB"]:
-            if size < 1024.0:
-                return f"{size:.2f} {unit}"
-            size /= 1024.0
-        return f"{size:.2f} TB"
-
-
-@dataclass
-class KnowledgeTag:
-    """Model für Tags/Keywords eines Dokuments"""
-
-    id: Optional[int] = None
-    document_id: int = 0
-    tag: str = ""

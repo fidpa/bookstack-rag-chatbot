@@ -2,12 +2,13 @@
 
 ## Supported Versions
 
-Only the latest minor release receives security fixes.
+Only the latest minor release receives security fixes. While the project is below 1.0,
+that is the most recent `0.x` line; older minor lines get none.
 
 | Version | Supported |
 |---------|-----------|
-| 1.x     | ✅        |
-| < 1.0   | ❌        |
+| latest `0.x` minor | ✅ |
+| older `0.x` minors | ❌ |
 
 ## Reporting a Vulnerability
 
@@ -31,7 +32,7 @@ This project is designed to run **inside a trusted network** (LAN, VPN, or behin
 | Surface | In scope |
 |---|---|
 | Widget XSS (BookStack-page injection) | ✅ |
-| Prompt injection via document content | ✅ |
+| Prompt injection via document content | ⚠️ in scope, **not mitigated today** (see [docs/SECURITY.md](docs/SECURITY.md#prompt-injection-not-mitigated-today)) |
 | IP allow-list bypass via reverse-proxy headers | ✅ |
 | Rate-limit bypass | ✅ |
 | BookStack API token theft via misconfiguration | ✅ |
@@ -39,14 +40,14 @@ This project is designed to run **inside a trusted network** (LAN, VPN, or behin
 | Container breakout from the chatbot backend | ✅ |
 | Public, internet-exposed deployments without TLS or auth | ❌ (out of scope) |
 | Compromise of the underlying host OS | ❌ |
-| Compromise of the LLM provider (Azure/Anthropic/Ollama) | ❌ |
+| Compromise of the LLM provider (Azure OpenAI/Ollama) | ❌ |
 
 ## Known Limitations
 
 These are documented design trade-offs, not vulnerabilities:
 
 - BookStack webhooks (as of v25.07) do not support HMAC signature validation — webhook authenticity is enforced via IP allow-list only.
-- SQLite FTS5 is a single-writer database. For multi-instance deployments, swap the backend for PostgreSQL + `pgvector` (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+- SQLite FTS5 is a single-writer database, and there is no storage interface to swap it behind: a PostgreSQL + `pgvector` backend means rewriting the knowledge-base services (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - The Ollama fallback is **disabled by default** to prevent accidental fallback to a non-hardened local model.
 
 ## Hardening Recommendations
@@ -55,6 +56,7 @@ When deploying:
 
 - Terminate TLS at a reverse proxy (nginx, Caddy, Traefik) — the chatbot backend speaks plain HTTP on the Docker network.
 - Restrict `ALLOWED_VPN_IPS` to the narrowest CIDR that includes your users.
+- Behind a reverse proxy, set `TRUSTED_PROXY_HOPS=1` and do not publish port 8888 to clients.
 - Rotate `BOOKSTACK_TOKEN_SECRET` and `SECRET_KEY` quarterly.
 - Mount the database volume read-only for any sidecar that does not need to write.
 - Keep `ENABLE_OLLAMA_FALLBACK=false` unless you have a hardened Ollama instance.

@@ -38,7 +38,6 @@
 
     // Smart API URL detection for localhost and production (HTTPS)
     const getApiUrl = function() {
-        const protocol = window.location.protocol;
         const hostname = window.location.hostname;
 
         // Development: Use localhost with port 8888
@@ -48,9 +47,9 @@
             return url;
         }
 
-        // Production: Use current origin (HTTPS via nginx proxy, no port)
-        // nginx proxies /chat/api/ to chatbot:8888
-        const url = `${protocol}//${hostname}/chat/api/widget`;
+        // Production: same origin as BookStack (port included); the reverse
+        // proxy routes /chat/api/ to chatbot:8888 (docker/nginx-example.conf)
+        const url = `${window.location.origin}/chat/api/widget`;
         console.log('[Widget] Production mode - API URL:', url);
         return url;
     };
@@ -70,12 +69,8 @@
             // Only create the button initially (lazy loading)
             this.createButton();
 
-            // Get or create session ID
-            this.sessionId = sessionStorage.getItem('knowledgebot-widget-session');
-            if (!this.sessionId) {
-                this.sessionId = 'widget-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
-                sessionStorage.setItem('knowledgebot-widget-session', this.sessionId);
-            }
+            // Session id issued by the server on the first answer (empty until then)
+            this.sessionId = sessionStorage.getItem('knowledgebot-widget-session') || '';
 
             // Preload widget resources in background after 2 seconds
             setTimeout(() => this.preloadResources(), 2000);
@@ -90,7 +85,7 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Widget-Session': this.sessionId || 'test'
+                    'X-Widget-Session': this.sessionId
                 },
                 body: JSON.stringify({ message: 'connectivity test' })
             })
@@ -677,6 +672,12 @@
                 const data = await response.json();
 
                 if (data.success) {
+                    // Keep the server's session id so the next question carries
+                    // the conversation history.
+                    if (data.session_id && data.session_id !== this.sessionId) {
+                        this.sessionId = data.session_id;
+                        sessionStorage.setItem('knowledgebot-widget-session', this.sessionId);
+                    }
                     this.addMessage(data.response || 'No response received');
                 } else {
                     this.addMessage('Error: ' + (data.error || 'Unknown error'));

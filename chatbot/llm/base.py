@@ -1,74 +1,39 @@
 """Abstract base class for LLM providers."""
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
-import logging
+from typing import List, Dict
 
-logger = logging.getLogger(__name__)
+
+class LLMError(RuntimeError):
+    """A failed model call. The message is safe to show to a wiki visitor;
+    the technical detail goes to the log where the error is raised."""
 
 
 class LLMProvider(ABC):
-    """Base class for LLM providers - minimal and simple"""
+    """A chat model behind one API: Azure OpenAI or Ollama."""
 
-    def __init__(self, name: str, config: dict = None):
-        """
-        Initialize LLM provider
+    #: Model or deployment identifier, reported in logs
+    model: str = ""
 
-        Args:
-            name: Provider name (ollama, claude, etc.)
-            config: Optional configuration dictionary
-        """
+    def __init__(self, name: str):
         self.name = name
-        self.config = config or {}
-        logger.info(f"Initializing {name} provider")
 
     @abstractmethod
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """
-        Chat with message history
+        Answer a conversation.
 
         Args:
-            messages: List of message dictionaries with 'role' and 'content'
-            **kwargs: Additional provider-specific parameters
+            messages: Message dicts with 'role' and 'content'
+            **kwargs: system_prompt, temperature, max_tokens
 
         Returns:
-            str: AI response
-        """
-        pass
+            The model's reply
 
-    @abstractmethod
-    def complete(self, prompt: str, **kwargs) -> str:
+        Raises:
+            LLMError: If the model could not answer
         """
-        Simple text completion
-
-        Args:
-            prompt: Text prompt
-            **kwargs: Additional provider-specific parameters
-
-        Returns:
-            str: AI completion
-        """
-        pass
 
     @abstractmethod
     def is_available(self) -> bool:
-        """
-        Check if provider is available
-
-        Returns:
-            bool: True if provider is available
-        """
-        pass
-
-    def get_info(self) -> Dict[str, Any]:
-        """
-        Get provider information
-
-        Returns:
-            Dict with provider info
-        """
-        return {
-            "name": self.name,
-            "available": self.is_available(),
-            "config": self.config,
-        }
+        """True if the provider can take a request right now."""

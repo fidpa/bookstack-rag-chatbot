@@ -1,6 +1,6 @@
 """
 Query Processor Constants
-German stopwords, intent patterns, and synonyms
+Stopwords (German and English), intent patterns, and synonyms
 """
 
 from .models import QueryIntent
@@ -133,6 +133,8 @@ GERMAN_STOPWORDS = {
     "manchmal",
     "niemals",
     # Fragewörter (teilweise behalten für Intent-Erkennung)
+    "was",
+    "wie",
     "wer",
     "wen",
     "wem",
@@ -158,26 +160,124 @@ GERMAN_STOPWORDS = {
     "ziemlich",
 }
 
+ENGLISH_STOPWORDS = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "not",
+    "nor",
+    "if",
+    "then",
+    "so",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "from",
+    "by",
+    "with",
+    "about",
+    "into",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "am",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "can",
+    "could",
+    "will",
+    "would",
+    "should",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "me",
+    "him",
+    "her",
+    "us",
+    "them",
+    "my",
+    "your",
+    "his",
+    "its",
+    "our",
+    "their",
+    "this",
+    "that",
+    "these",
+    "those",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "when",
+    "where",
+    "why",
+    "how",
+    "there",
+    "here",
+    "any",
+    "some",
+    "all",
+    "no",
+    "yes",
+    "please",
+    "tell",
+}
+
+# Both languages at once: the widget answers in the user's language, and a
+# question can mix them ("Wie funktioniert das Deployment?").
+STOPWORDS = GERMAN_STOPWORDS | ENGLISH_STOPWORDS
+
 # Intent-Patterns
 INTENT_PATTERNS = {
     QueryIntent.DEFINITION: [
+        r"what\s+(is|are)\s+",
+        r"meaning\s+of\s+",
         r"was\s+(ist|sind)\s+",
         r"definition\s+(von|für)\s+",
         r"bedeutet\s+",
         r"bedeutung\s+(von|für)\s+",
     ],
     QueryIntent.EXPLANATION: [
+        r"how\s+(do|does|can|to)\s+",
+        r"explain\s+",
         r"wie\s+(funktioniert|arbeitet|geht)\s+",
         r"erkläre\s+",
         r"erklärung\s+(von|für)\s+",
         r"wie\s+kann\s+",
     ],
     QueryIntent.EXAMPLE: [
+        r"example\s+of\s+",
         r"beispiel\s+(für|von)\s+",
         r"zeige?\s+beispiel",
         r"gibt\s+es\s+beispiele",
     ],
     QueryIntent.COMPARISON: [
+        r"difference\s+between\s+",
         r"\s+vs\.?\s+",
         r"\s+versus\s+",
         r"\s+gegen\s+",
@@ -185,6 +285,7 @@ INTENT_PATTERNS = {
         r"vergleich\s+(zwischen|von)\s+",
     ],
     QueryIntent.LIST: [
+        r"list\s+(of|all)\s+",
         r"liste\s+(von|der|aller)\s+",
         r"alle\s+",
         r"welche\s+arten\s+",
@@ -192,14 +293,8 @@ INTENT_PATTERNS = {
     ],
 }
 
-# Synonyme für Query-Expansion
-SYNONYMS = {
-    "team": ["gruppe", "arbeitsgruppe", "teamarbeit"],
-    "reflexivität": ["reflexion", "reflektion", "selbstreflexion", "reflexiv"],
-    "methode": ["verfahren", "ansatz", "technik", "vorgehen"],
-    "analyse": ["untersuchung", "auswertung", "evaluation"],
-    "prozess": ["ablauf", "verfahren", "vorgang"],
-    "entwicklung": ["fortschritt", "entfaltung", "evolution"],
-    "kommunikation": ["austausch", "dialog", "interaktion"],
-    "struktur": ["aufbau", "gliederung", "organisation"],
-}
+# Synonyms for query expansion, keyed by lower-case keyword. Empty by default:
+# useful synonyms depend on the wiki's vocabulary. Add entries such as
+#   "vacation": ["leave", "holiday", "pto"],
+# and the first two of each list are searched alongside the keyword.
+SYNONYMS: dict = {}

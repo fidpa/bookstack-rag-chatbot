@@ -8,6 +8,8 @@ import logging
 from typing import Optional, Tuple, Dict, List
 from werkzeug.datastructures import FileStorage
 
+from utils.database import get_db_path
+
 from ...models import KnowledgeDocument
 from . import file_operations, metadata, statistics
 
@@ -18,13 +20,8 @@ class StorageService:
     """Service für die permanente Speicherung von Wissensbasis-Dokumenten"""
 
     # Storage configuration
-    STORAGE_BASE_PATH = os.path.join(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        ),
-        "data",
-        "knowledge_base",
-    )
+    # Uploaded files live next to the database, in the same volume
+    STORAGE_BASE_PATH = os.path.join(os.path.dirname(get_db_path()), "knowledge_base")
 
     @classmethod
     def ensure_storage_directory(cls) -> None:
@@ -48,7 +45,7 @@ class StorageService:
         file: FileStorage,
         title: str = "",
         description: str = "",
-        tags: list = None,
+        tags: Optional[list] = None,
     ) -> Tuple[bool, str, Optional[KnowledgeDocument]]:
         """Speichert eine Datei permanent in der Wissensbasis"""
         return file_operations.save_file(file, title, description, tags)

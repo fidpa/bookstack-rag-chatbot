@@ -6,7 +6,7 @@ Everything below describes the path a widget request actually takes.
 ## Pipeline Overview
 
 ```
-            query string
+            the visitor's question
                  │
                  ▼
     ┌──────────────────────────────┐
@@ -27,22 +27,26 @@ Everything below describes the path a widget request actually takes.
                ▼
     ┌──────────────────────────────┐
     │   Score fusion                │   sum of per-strategy scores,
-    │                               │   with a +50% bonus per
-    │                               │   additional strategy that
-    │                               │   matched the same document
+    │                               │   +50% per distinct strategy
+    │                               │   that found the document
     └──────────┬───────────────────┘
                ▼
     ┌──────────────────────────────┐
-    │   Context builder             │   top candidates + current
-    │                               │   BookStack page context
+    │   Context builder             │   current page + excerpts of
+    │                               │   the top three documents
     └──────────┬───────────────────┘
                ▼
     ┌──────────────────────────────┐
-    │   LLM completion              │   answer + cited source URIs
+    │   LLM completion              │   instruction prompt, context,
+    │                               │   last ten turns, question
     └──────────┬───────────────────┘
                ▼
       JSON response
 ```
+
+The search runs on the question alone. The page the visitor is on goes into the
+prompt as context (see below), but not into the search query: mixed in, its text
+would decide which keywords the analyser picks.
 
 There is no separate LLM reranking step. The only LLM call is the final
 answer generation, which sees the fused top candidates as system context.
@@ -51,8 +55,8 @@ Four of the seven strategies are conditional, in
 `HybridSearchService._execute_multi_strategy_search`
 (`chatbot/documents/knowledge_base/services/hybrid_search/core.py`):
 
-- **Exact phrase** runs only with two or more keywords, over the first three
-  must-have terms.
+- **Exact phrase** runs only with two or more keywords, over the first three keywords
+  in the order the question names them ("vacation policy").
 - **Keyword AND** runs only with two or more must-have terms.
 - **Proximity** runs only with two or more keywords and an intent other than
   `GENERAL`, over the first two keywords at `distance=10`.
@@ -64,16 +68,37 @@ and `search_bookstack_chunks`. They have no bucket of their own: their results a
 appended to `KEYWORD_OR` and `CHUNK_BASED`, so a wiki page and an uploaded document
 compete inside the same strategy for the fusion bonus.
 
+### Query analysis and FTS5 syntax
+
+Keywords are the question's words of three or more characters (letters of any script
+and digits, so `404` counts) minus German and English stopwords
+(`query_processor/constants.py`). Every term reaches FTS5 as a quoted string, built by
+`query_processor/preprocessor.py`. That matters: bare words are FTS5 syntax, and a
+question with an upper-case `NOT`, `AND` or `NEAR`, a hyphen or a stray quote would
+otherwise become an operator or a syntax error. A question with no searchable word at
+all (`"?!"`) skips the search instead of matching anything.
+
+`SYNONYMS` in the same constants file expands keywords into extra search variants.
+It ships empty; useful synonyms depend on the wiki's vocabulary.
+
 ## Chunking Strategy
 
-Wiki pages and uploaded documents are split into overlapping chunks before indexing. The strategy is sentence-aware with a sliding window:
+Wiki pages and uploaded documents are split into overlapping chunks before indexing,
+by one implementation, `TextChunker` in `chatbot/utils/text_chunking.py`:
 
-| Parameter | Default | Where |
-|---|---|---|
-| Target chunk size | 800 words | `chatbot/bookstack/chunking.py` (`BookStackChunkingService.DEFAULTS`) |
-| Overlap | 150 words (~19 %) | same |
-| Sentence boundary detection | `_split_into_sentences`: `.!?` before whitespace and an uppercase letter (`A-ZÄÖÜ`), `.!?` before a newline, a blank line as a paragraph break, or `.!?` at the end of the text | same |
-| Min chunk size | 80 words (smaller chunks merge with the next) | same |
+| Parameter | Wiki pages | Uploads | Where |
+|---|---|---|---|
+| Target chunk size | 800 words | 1000 words | `BookStackChunkingService.DEFAULTS` / `ChunkingService.DEFAULTS` |
+| Overlap | 150 words (~19 %) | 200 words | same |
+| Min chunk size | 80 words | 100 words | same; smaller chunks merge into the next |
+
+The text is first split into units: sentences (`.!?` before whitespace and a capital
+letter or digit) and lines. Lines matter because list items, table cells and headings
+carry no sentence punctuation; `clean_html_content()` in `sync_service.py` therefore
+turns block elements (`<p>`, `<li>`, `<tr>`, headings, `<br>`) into line breaks before
+stripping the tags. Units are packed into chunks up to the target size, and the last
+units of a chunk, up to the overlap, start the next one. A single unit longer than a
+whole chunk is cut into overlap-sized word windows, so no chunk exceeds the target.
 
 Sentence-awareness matters because BM25 ranks token matches but humans read sentences. Splitting mid-sentence produces chunks where the most relevant token has lost its context.
 
@@ -82,11 +107,17 @@ Tuning notes:
 - **Larger chunks** (e.g. 1 200 words) help when answers span multiple paragraphs, but they dilute BM25 scores and may exceed your LLM's context budget after concatenation.
 - **Smaller chunks** (e.g. 400 words) increase precision but require more chunks in the prompt for the same effective context.
 
+Changing either configuration needs a rebuild of the affected index; see
+[CONFIGURATION.md](CONFIGURATION.md#tuning-recipes).
+
 ## FTS5 Configuration
 
-Three external-content FTS5 tables, all on the default tokeniser (`unicode61`,
-accent-folding off). `ContentSyncService._init_db` creates the two BookStack ones and
-keeps them current with triggers:
+Three external-content FTS5 tables, all on the default tokeniser `unicode61`, which
+folds diacritics: `uber` matches `über`. There is no stemming (no `porter`); add the
+tokeniser option to the `CREATE VIRTUAL TABLE` and rebuild if your corpus needs it.
+
+`BOOKSTACK_SCHEMA` in `chatbot/bookstack/sync_service.py` creates the two BookStack
+tables:
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS bookstack_fts USING fts5(
@@ -100,17 +131,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS bookstack_chunks_fts USING fts5(
 );
 ```
 
-The default `unicode61` tokeniser handles ASCII and the common European
-Unicode range. There is no stemming (no `porter`) and no accent folding
-beyond the default: `über` will not match `uber` out of the box. If your
-corpus needs either, add the relevant tokeniser options to the
-`CREATE VIRTUAL TABLE` and reindex.
-
-`scripts/init_kb_schema.py` creates the knowledge-base table, which indexes a single
-column rather than three:
+`KB_SCHEMA` in `chatbot/documents/knowledge_base/schema.py` creates the
+knowledge-base table, which indexes a single column rather than three:
 
 ```sql
-CREATE VIRTUAL TABLE kb_chunks_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
     chunk_text,
     content='kb_chunks', content_rowid='id'
 );
@@ -119,91 +144,102 @@ CREATE VIRTUAL TABLE kb_chunks_fts USING fts5(
 A title match on an uploaded document therefore comes from the `kb_documents` row, not
 from the FTS index; on a wiki page it comes from the index.
 
+Triggers keep the three indexes in step with their content tables. Because the
+content is external, a trigger cannot simply `DELETE` or `UPDATE` the FTS row: FTS5
+would read the terms to remove from the content table, where they are already gone or
+replaced. The triggers use FTS5's `'delete'` command with the old values instead, and
+BookStack items are written with `INSERT ... ON CONFLICT DO UPDATE` so the update
+trigger fires. Items are keyed by `(bookstack_id, type)`, since BookStack numbers
+books, chapters and pages separately.
+
 ## Score Fusion
 
-Each FTS5 strategy returns its own ranked result set. `ResultFusion`
-(`chatbot/documents/knowledge_base/services/hybrid_search/fusion.py`)
-combines them with a per-strategy sum plus a bonus:
+Each strategy scores its hits as its weight times the hit's bm25 relevance relative to
+the best hit of the same search, so the best hit gets the full weight and weaker ones
+proportionally less (`strategies.py`, `relative_relevance`):
+
+| Strategy | Weight |
+|---|---|
+| Title / tags | 3.0 |
+| Exact phrase | 2.5 |
+| Keyword AND | 2.0 |
+| Proximity | 1.8 |
+| Keyword OR | 1.5 |
+| Chunk-level | 1.3 |
+| Fuzzy | 1.0 |
+
+`ResultFusion` (`chatbot/documents/knowledge_base/services/hybrid_search/fusion.py`)
+then combines them per document:
 
 ```
-score(d) = ( Σ score_i(d) ) × (1 + 0.5 × strategies_matched(d))
+score(d) = ( Σ score_i(d) ) × (1 + 0.5 × distinct_strategies(d))
             i
 ```
 
-A document that matches three strategies (e.g. exact phrase + AND + title)
-ends up with a 2.5× multiplier over a document that only matched one. The
-multiplier captures the intuition that hitting multiple retrieval paths is
-a strong signal of relevance, without requiring score normalisation
-across strategies with different BM25 distributions.
+A document found by three strategies gets a multiplier of 2.5, one found by a single
+strategy 1.5, so the first is weighted 1.67 times as strongly before the scores are
+compared. The multiplier captures the intuition that hitting multiple retrieval paths
+is a strong signal of relevance. Each strategy counts once per document, even when
+the BookStack searches add a second hit to the same bucket.
 
-The top results are then handed straight to the LLM as system context.
+A wiki item's page-level hit and its chunk hits share one id, so they merge into one
+document here and occupy one of the three context slots.
 
 ## Prompt Assembly
 
-Two system messages and the conversation reach the provider, assembled in
-`chatbot/chat/widget_service.py`:
+The provider receives, assembled in `chatbot/chat/widget_service.py`:
 
-1. **The instruction prompt**, the `default_system_prompt` literal, or whatever
-   `CHATBOT_SYSTEM_PROMPT` replaces it with. It names the two sources, asks for brief
-   citations, tells the model to say so when the sources do not answer, and to reply in
-   the user's language.
-2. **The retrieved context**, as
+1. **The instruction prompt**, `DEFAULT_SYSTEM_PROMPT`, or `CHATBOT_SYSTEM_PROMPT` when
+   that is set and not empty. It names the two sources, asks for brief citations, tells
+   the model to say so when the sources do not answer, and to reply in the user's
+   language.
+2. **The context**, as one system message
    `f"Relevant context from knowledge base:\n{combined_context}"`.
-3. **The last ten messages** of the conversation. When the widget sent page context, the
-   current user message is extended with `[Current page context: ...]`.
+3. **The last ten messages** of the conversation (five exchanges). The session lives in
+   memory for 30 minutes; a turn that failed is not stored.
+4. **The question**, unchanged.
 
-`combined_context` is built by `ChunkSelectionStrategy.build_context`
-(`…/services/strategies/chunk_strategy.py`) and looks like this, with German section
-labels left over from the original deployment:
+`combined_context` starts with the page the visitor is on, when the widget sent it:
+up to 20,000 characters (`ChatContextBuilder.PAGE_CONTEXT_CHARS`) under a
+`BookStack Page:` heading with its URL. The retrieved excerpts follow, built by
+`ChunkSelectionStrategy.build_context` (`…/services/strategies/chunk_strategy.py`):
 
 ```
-## Relevante Informationen aus der Wissensbasis:
+## Relevant information from the knowledge base:
 
-### Dokument 1: Employee Handbook
-[Auszug 1]
+### Document 1: Employee Handbook
+[Excerpt 1]
 Acme runs a flexible-hours model with a small mandatory overlap window.
 Core hours: 10:00 to 15:00 local time. ...
 
-### Dokument 2: Vacation and Leave Policy
-[Auszug 1]
+### Document 2: Vacation and Leave Policy
+[Excerpt 1]
 ...
 ```
 
-At most three documents (`ContextService.MAX_CONTEXT_DOCS`), at most three chunks each,
-and at most 3000 tokens in total; when the budget runs out the builder appends
-`[Weitere relevante Informationen vorhanden, aber Context-Limit erreicht]` and stops.
+At most three documents (`ContextService.MAX_CONTEXT_DOCS`), at most three excerpts
+each, and at most 3000 words in total; when the budget runs out the builder appends
+`[More relevant information exists but the context limit was reached]` and stops.
+When no document contributes an excerpt, the block is left out entirely.
 
-There are **no source URLs in the context**. The prompt asks the model to cite briefly,
-and the model does that from the document titles it can see; nothing hands it a link,
-and nothing checks that a citation appeared.
+Retrieved documents carry their title but no URL. The prompt asks the model to cite
+briefly, and it does that from the titles; nothing checks that a citation appeared.
 
 ### How wiki content reaches the context
 
-Two routes, and they are separate on purpose:
-
 - **The page the visitor is on.** The widget sends it as `page_content` in
-  `bookstack_context`, and `ChatContextBuilder` puts the first 2000 characters into the
-  context block under a `BookStack Page:` heading.
-- **Retrieved pages.** `search_bookstack_content` and `search_bookstack_chunks` query
-  the `bookstack_*` tables inside the hybrid search, and `ResultConverters` turns each
-  hit into a virtual `KnowledgeDocument` carrying the FTS5 snippet as its text.
-  `ChunkSelectionStrategy.build_context` renders those from the snippet, since a wiki
-  hit has no `kb_chunks` rows to join against.
-
-The two BookStack searches find the same page under different synthetic ids, so
-`build_context` groups them on the underlying BookStack item rather than on the
-document id; otherwise one page would take two of the three context slots. Excerpts a
-document already carries verbatim are dropped, and the `<mark>` tags FTS5 puts around
-matched terms are stripped before the text goes into the prompt.
-
-Chunks from both sources are ordered on one convention, smaller is better: FTS5 `rank`
-for knowledge-base chunks, `-relevance_score` for wiki hits.
+  `bookstack_context`, and `ChatContextBuilder` puts it into the context block, once.
+- **Retrieved pages.** `search_bookstack_chunks` returns the full text of each page's
+  best-matching chunks; `ResultConverters` carries them on the virtual
+  `KnowledgeDocument` it builds per wiki hit, and `build_context` uses up to three of
+  them. A page found only as a whole, without a matching chunk, contributes its FTS5
+  snippet instead.
 
 ## When This Breaks
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Chatbot says "I don't know" for content that exists | Webhook didn't fire, or BookStack page is in `draft` state | Edit the page in BookStack; webhook fires on update |
+| Chatbot says "I don't know" for content that exists | The index is empty or stale: webhooks not set up, or a page still in `draft` | `docker compose exec chatbot python resync.py --dry-run` shows what the index holds; `--full-resync` fills it |
 | Off-topic answers, ignores sources | BM25 is matching weak signals across many strategies | Reduce chunk size, or narrow the system prompt |
 | Hallucinated facts | System prompt didn't override the LLM's training | Make prompt stricter: "Answer ONLY from sources. Refuse otherwise." |
 | Very slow responses (>5 s) | LLM provider is rate-limited or far away | Switch provider, or pick a smaller deployment |

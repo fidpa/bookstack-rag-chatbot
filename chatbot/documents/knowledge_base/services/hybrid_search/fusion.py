@@ -4,11 +4,23 @@ Handles the fusion and ranking of search results from multiple strategies
 """
 
 import logging
-from typing import List, Dict
+from dataclasses import dataclass, field
+from typing import Dict, List, Set, Union
+
 from .strategies import SearchStrategy
 from .models import SearchResult
 
 logger = logging.getLogger(__name__)
+
+# Score multiplier per distinct strategy that found a document
+STRATEGY_BONUS = 0.5
+
+
+@dataclass
+class _Fused:
+    result: SearchResult
+    total_score: float = 0.0
+    strategies: Set[SearchStrategy] = field(default_factory=set)
 
 
 class ResultFusion:
@@ -18,46 +30,35 @@ class ResultFusion:
     def fuse_and_rank_results(
         cls, all_results: Dict[SearchStrategy, List[SearchResult]]
     ) -> List[SearchResult]:
-        """Fusioniert und rankt Ergebnisse aus verschiedenen Strategien"""
-        # Sammle alle einzigartigen Dokumente
-        doc_scores = {}
+        """
+        Merge the per-strategy hit lists into one ranking.
+
+        A document's score is the sum of its hit scores, multiplied by
+        1 + 0.5 per distinct strategy that found it. The first hit seen for a
+        document is kept as its result; later hits contribute their matched
+        chunks and, if longer, their snippet.
+        """
+        fused: Dict[Union[int, str], _Fused] = {}
 
         for strategy, results in all_results.items():
             for result in results:
-                doc_id = result.doc_id
+                entry = fused.setdefault(result.doc_id, _Fused(result=result))
+                entry.total_score += result.relevance_score
+                entry.strategies.add(strategy)
 
-                if doc_id not in doc_scores:
-                    doc_scores[doc_id] = {
-                        "result": result,
-                        "total_score": 0,
-                        "strategies": [],
-                    }
+                if entry.result is result:
+                    continue
+                if result.snippet and len(result.snippet) > len(entry.result.snippet):
+                    entry.result.snippet = result.snippet
+                entry.result.matched_chunks.extend(result.matched_chunks)
+                entry.result.metadata = {**result.metadata, **entry.result.metadata}
 
-                # Addiere Score
-                doc_scores[doc_id]["total_score"] += result.relevance_score
-                doc_scores[doc_id]["strategies"].append(strategy)
+        # Each strategy counts once: the BookStack searches add to the KEYWORD_OR
+        # and CHUNK_BASED lists, and a repeat there says nothing about agreement
+        # between methods.
+        for entry in fused.values():
+            entry.total_score *= 1 + len(entry.strategies) * STRATEGY_BONUS
+            entry.result.relevance_score = entry.total_score
 
-                # Update mit besserem Snippet wenn vorhanden
-                if result.snippet and len(result.snippet) > len(
-                    doc_scores[doc_id]["result"].snippet
-                ):
-                    doc_scores[doc_id]["result"].snippet = result.snippet
-
-                # Merge matched chunks
-                if result.matched_chunks:
-                    doc_scores[doc_id]["result"].matched_chunks.extend(
-                        result.matched_chunks
-                    )
-
-        # Bonus für Dokumente die in mehreren Strategien gefunden wurden
-        for doc_data in doc_scores.values():
-            strategy_bonus = len(doc_data["strategies"]) * 0.5
-            doc_data["total_score"] *= 1 + strategy_bonus
-            doc_data["result"].relevance_score = doc_data["total_score"]
-
-        # Sortiere nach Score
-        ranked = sorted(
-            doc_scores.values(), key=lambda x: x["total_score"], reverse=True
-        )
-
-        return [item["result"] for item in ranked]
+        ranked = sorted(fused.values(), key=lambda e: e.total_score, reverse=True)
+        return [entry.result for entry in ranked]

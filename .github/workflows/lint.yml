@@ -26,24 +26,34 @@ jobs:
           pip install -r chatbot/requirements.txt
 
       - name: ruff
-        run: ruff check chatbot scripts tests
+        run: ruff check chatbot scripts tests samples
 
       - name: black --check
-        run: black --check chatbot scripts tests
+        run: black --check chatbot scripts tests samples
 
-      - name: mypy (non-strict)
-        run: mypy --ignore-missing-imports chatbot || true
+      - name: mypy
+        run: mypy --ignore-missing-imports chatbot
 
-  shell:
-    name: Shell (shellcheck)
+  tests:
+    name: Tests (pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: shellcheck
-        uses: ludeeus/action-shellcheck@master
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          scandir: scripts
-          severity: warning
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r chatbot/requirements.txt
+
+      # Needs no BookStack, LLM or Docker; integration tests skip
+      - name: pytest
+        run: pytest -q
 
   yaml:
     name: YAML (yamllint)

@@ -15,11 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p /app/data /app/logs /app/uploads /app/flask_session
+# The data directory must belong to the runtime user: a fresh named volume
+# mounted at /app/data takes over this ownership, and with root as owner the
+# app could not create its database.
+RUN mkdir -p /app/data && chmod -R 755 /app && chown -R 1000:1000 /app/data
 
-# Set permissions
-RUN chmod -R 755 /app
+USER 1000:1000
 
 # Expose port
 EXPOSE 8888

@@ -4,7 +4,7 @@ Converts SearchResult objects to KnowledgeDocument objects
 """
 
 import logging
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from utils.database import get_db_connection
 from ...models import KnowledgeDocument
 from .models import SearchResult
@@ -37,10 +37,7 @@ class ResultConverters:
         bookstack_results = []
 
         for result in page_results:
-            if result.metadata and result.metadata.get("source") in [
-                "bookstack",
-                "bookstack_chunk",
-            ]:
+            if result.metadata.get("source") == "bookstack":
                 bookstack_results.append(result)
             else:
                 kb_results.append(result)
@@ -90,10 +87,9 @@ class ResultConverters:
 
                 # Konvertiere BookStack Results zu "virtuellen" KnowledgeDocument Objekten
                 for result in bookstack_results:
-                    if result.metadata:
-                        doc = cls._create_bookstack_document(result)
-                        if doc:
-                            documents.append(doc)
+                    bookstack_doc = cls._create_bookstack_document(result)
+                    if bookstack_doc:
+                        documents.append(bookstack_doc)
 
         except Exception as e:
             logger.error(f"Fehler beim Laden der Dokumente: {str(e)}")
@@ -104,7 +100,9 @@ class ResultConverters:
         return documents, total_count
 
     @classmethod
-    def _create_bookstack_document(cls, result: SearchResult) -> "KnowledgeDocument":
+    def _create_bookstack_document(
+        cls, result: SearchResult
+    ) -> Optional[KnowledgeDocument]:
         """Erstellt ein virtuelles KnowledgeDocument für BookStack Content"""
         try:
             metadata = result.metadata
@@ -131,7 +129,13 @@ class ResultConverters:
             doc.bookstack_id = metadata.get("bookstack_id")
             doc.bookstack_type = metadata.get("content_type")
             doc.bookstack_url = metadata.get("url")
-            doc.chunk_index = metadata.get("chunk_index")
+            # Full text of the item's matching chunks, best first. Fusion merges
+            # the chunk hits of search_bookstack_chunks into this result.
+            doc.bookstack_chunks = [
+                chunk["chunk_text"]
+                for chunk in sorted(result.matched_chunks, key=lambda c: c["rank"])
+                if chunk.get("chunk_text")
+            ]
 
             return doc
 

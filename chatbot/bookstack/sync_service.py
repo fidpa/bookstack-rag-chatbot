@@ -4,18 +4,217 @@ Mirrors BookStack pages/chapters/books into the local FTS index, with
 overlap-aware chunking for retrieval.
 """
 
+import json
 import os
 import logging
-import sqlite3
-from typing import List, Dict, Optional, Set, Tuple
-from html import unescape
 import re
+import sqlite3
+from contextlib import contextmanager
+from html import unescape
+from typing import Dict, Iterator, Optional, Set, Tuple
 
-# Import the new chunking service
 from .chunking import BookStackChunkingService
+from utils.database import get_db_path
 from utils.timezone_helpers import format_for_database
 
 logger = logging.getLogger(__name__)
+
+# BookStack numbers books, chapters and pages independently, so an id is only
+# unique together with its type. The FTS tables use external content, which
+# means their triggers must remove old terms with the special 'delete' command:
+# a plain DELETE or UPDATE on the FTS table reads the terms to remove from the
+# content table, where they are already gone or already replaced.
+BOOKSTACK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bookstack_content (
+    id INTEGER PRIMARY KEY,
+    bookstack_id INTEGER NOT NULL,
+    type TEXT NOT NULL, -- 'page', 'chapter', 'book'
+    title TEXT NOT NULL,
+    content TEXT,
+    url TEXT,
+    book_id INTEGER,
+    chapter_id INTEGER,
+    tags TEXT, -- JSON array
+    created_at TEXT,
+    updated_at TEXT,
+    synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(bookstack_id, type)
+);
+
+CREATE TABLE IF NOT EXISTS bookstack_chunks (
+    id INTEGER PRIMARY KEY,
+    bookstack_id INTEGER NOT NULL,
+    content_type TEXT NOT NULL, -- 'page', 'chapter', 'book'
+    chunk_index INTEGER NOT NULL,
+    chunk_text TEXT NOT NULL,
+    start_pos INTEGER NOT NULL,
+    end_pos INTEGER NOT NULL,
+    word_count INTEGER NOT NULL,
+    title TEXT,
+    url TEXT,
+    book_id INTEGER,
+    chapter_id INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(bookstack_id, content_type, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bookstack_content_book ON bookstack_content(book_id);
+CREATE INDEX IF NOT EXISTS idx_bookstack_content_chapter ON bookstack_content(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_bookstack_chunks_book ON bookstack_chunks(book_id);
+CREATE INDEX IF NOT EXISTS idx_bookstack_chunks_chapter ON bookstack_chunks(chapter_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS bookstack_fts USING fts5(
+    title, content, tags,
+    content=bookstack_content,
+    content_rowid=id
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS bookstack_chunks_fts USING fts5(
+    title, chunk_text, content_type,
+    content=bookstack_chunks,
+    content_rowid=id
+);
+
+CREATE TRIGGER IF NOT EXISTS bookstack_fts_insert
+AFTER INSERT ON bookstack_content BEGIN
+    INSERT INTO bookstack_fts(rowid, title, content, tags)
+    VALUES (new.id, new.title, new.content, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bookstack_fts_delete
+AFTER DELETE ON bookstack_content BEGIN
+    INSERT INTO bookstack_fts(bookstack_fts, rowid, title, content, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bookstack_fts_update
+AFTER UPDATE ON bookstack_content BEGIN
+    INSERT INTO bookstack_fts(bookstack_fts, rowid, title, content, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.tags);
+    INSERT INTO bookstack_fts(rowid, title, content, tags)
+    VALUES (new.id, new.title, new.content, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bookstack_chunks_fts_insert
+AFTER INSERT ON bookstack_chunks BEGIN
+    INSERT INTO bookstack_chunks_fts(rowid, title, chunk_text, content_type)
+    VALUES (new.id, new.title, new.chunk_text, new.content_type);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bookstack_chunks_fts_delete
+AFTER DELETE ON bookstack_chunks BEGIN
+    INSERT INTO bookstack_chunks_fts(bookstack_chunks_fts, rowid, title, chunk_text, content_type)
+    VALUES ('delete', old.id, old.title, old.chunk_text, old.content_type);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bookstack_chunks_fts_update
+AFTER UPDATE ON bookstack_chunks BEGIN
+    INSERT INTO bookstack_chunks_fts(bookstack_chunks_fts, rowid, title, chunk_text, content_type)
+    VALUES ('delete', old.id, old.title, old.chunk_text, old.content_type);
+    INSERT INTO bookstack_chunks_fts(rowid, title, chunk_text, content_type)
+    VALUES (new.id, new.title, new.chunk_text, new.content_type);
+END;
+"""
+
+# Objects of the pre-0.3 schema, dropped when it is detected. The index is
+# derived data; `resync.py --full-resync` rebuilds it from BookStack.
+_LEGACY_OBJECTS = [
+    ("TRIGGER", "bookstack_fts_insert"),
+    ("TRIGGER", "bookstack_fts_update"),
+    ("TRIGGER", "bookstack_fts_delete"),
+    ("TRIGGER", "bookstack_chunks_fts_insert"),
+    ("TRIGGER", "bookstack_chunks_fts_update"),
+    ("TRIGGER", "bookstack_chunks_fts_delete"),
+    ("TABLE", "bookstack_fts"),
+    ("TABLE", "bookstack_chunks_fts"),
+    ("TABLE", "bookstack_chunks"),
+    ("TABLE", "bookstack_content"),
+]
+
+# Block-level tags that end a line of text. Keeping those breaks lets the
+# chunker split lists, tables and headings, which carry no sentence punctuation.
+_BLOCK_TAGS = re.compile(
+    r"<\s*(br|/p|/div|/li|/tr|/h[1-6]|/pre|/blockquote|/table|/ul|/ol)\b[^>]*>",
+    re.IGNORECASE,
+)
+_INVISIBLE = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+
+
+def _is_legacy_schema(conn: sqlite3.Connection) -> bool:
+    """True if bookstack_content exists without the (bookstack_id, type) key."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bookstack_content'"
+    ).fetchone()
+    return row is not None and "UNIQUE(bookstack_id,type)" not in re.sub(
+        r"\s+", "", row[0]
+    )
+
+
+# Database files whose schema this process has already checked
+_schema_checked: Set[str] = set()
+
+
+def ensure_bookstack_schema(db_path: Optional[str] = None) -> bool:
+    """
+    Create the BookStack index schema, replacing the pre-0.3 layout if found.
+
+    Returns:
+        True if a legacy index was dropped and needs a full resync.
+    """
+    db_path = db_path or get_db_path()
+    if db_path in _schema_checked:
+        return False
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        dropped = _is_legacy_schema(conn)
+        drops = "".join(
+            f"DROP {kind} IF EXISTS {name};\n" for kind, name in _LEGACY_OBJECTS
+        )
+        conn.executescript(
+            "BEGIN IMMEDIATE;\n"
+            + (drops if dropped else "")
+            + BOOKSTACK_SCHEMA
+            + "\nCOMMIT;"
+        )
+        if dropped:
+            logger.warning(
+                "Dropped the BookStack index built by an older version (its key "
+                "and FTS triggers were wrong). Rebuild it with: "
+                "python resync.py --full-resync"
+            )
+        _schema_checked.add(db_path)
+        return dropped
+    finally:
+        conn.close()
+
+
+def clean_html_content(html: str) -> str:
+    """
+    Turn BookStack HTML into plain text, keeping one line per block element.
+
+    Args:
+        html: Raw HTML from BookStack
+
+    Returns:
+        Text with horizontal whitespace collapsed and blocks on separate lines
+    """
+    if not html:
+        return ""
+
+    text = _INVISIBLE.sub(" ", html)
+    text = _BLOCK_TAGS.sub("\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    text = re.sub(r"[ \t\r\f\v\xa0]+", " ", text)
+    text = re.sub(r" ([.,;:!?])", r"\1", text)  # "<b>apt</b>." left "apt ."
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 class ContentSyncService:
@@ -24,182 +223,73 @@ class ContentSyncService:
     """
 
     def __init__(
-        self, bookstack_client, db_path: str = None, enable_chunking: bool = True
+        self,
+        bookstack_client,
+        db_path: Optional[str] = None,
+        enable_chunking: bool = True,
     ):
         """
         Initialize sync service
 
         Args:
             bookstack_client: BookStackClient instance
-            db_path: Path to SQLite database
+            db_path: Path to SQLite database (default: DATABASE_PATH)
             enable_chunking: Whether to use intelligent chunking (default: True)
         """
         self.client = bookstack_client
-        self.db_path = db_path or os.getenv("DATABASE_PATH", "data/chatbot.db")
+        self.db_path = db_path or get_db_path()
         self.enable_chunking = enable_chunking
+        self.chunking_service = BookStackChunkingService() if enable_chunking else None
+        self.external_url = os.getenv("BOOKSTACK_EXTERNAL_URL", "").rstrip("/")
+        # Chapters and pages that failed to load during a sync_all() walk
+        self._walk_errors = 0
 
-        # Initialize chunking service if enabled
-        if self.enable_chunking:
-            self.chunking_service = BookStackChunkingService()
-            logger.info("BookStack sync with intelligent chunking enabled")
-        else:
-            self.chunking_service = None
-            logger.info("BookStack sync with simple content storage")
+        ensure_bookstack_schema(self.db_path)
 
-        self._init_db()
-
-    def _init_db(self):
-        """Initialize database tables if not exists"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-
-            # Enable WAL mode for better concurrency and performance
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-
-            # BookStack content table (original - kept for compatibility)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS bookstack_content (
-                    id INTEGER PRIMARY KEY,
-                    bookstack_id INTEGER UNIQUE NOT NULL,
-                    type TEXT NOT NULL, -- 'page', 'chapter', 'book'
-                    title TEXT NOT NULL,
-                    content TEXT,
-                    url TEXT,
-                    book_id INTEGER,
-                    chapter_id INTEGER,
-                    tags TEXT, -- JSON array
-                    created_at TEXT,
-                    updated_at TEXT,
-                    synced_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            # NEW: BookStack chunks table for enhanced RAG
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS bookstack_chunks (
-                    id INTEGER PRIMARY KEY,
-                    bookstack_id INTEGER NOT NULL,
-                    content_type TEXT NOT NULL, -- 'page', 'chapter', 'book'
-                    chunk_index INTEGER NOT NULL,
-                    chunk_text TEXT NOT NULL,
-                    start_pos INTEGER NOT NULL,
-                    end_pos INTEGER NOT NULL,
-                    word_count INTEGER NOT NULL,
-                    title TEXT,
-                    url TEXT,
-                    book_id INTEGER,
-                    chapter_id INTEGER,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(bookstack_id, content_type, chunk_index)
-                )
-            """)
-
-            # FTS5 table for search (original content)
-            cursor.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS bookstack_fts
-                USING fts5(
-                    title, content, tags,
-                    content=bookstack_content,
-                    content_rowid=id
-                )
-            """)
-
-            # NEW: FTS5 table for chunk-based search
-            cursor.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS bookstack_chunks_fts
-                USING fts5(
-                    title, chunk_text, content_type,
-                    content=bookstack_chunks,
-                    content_rowid=id
-                )
-            """)
-
-            # Triggers to keep FTS tables in sync
-
-            # Original content FTS triggers
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS bookstack_fts_insert
-                AFTER INSERT ON bookstack_content BEGIN
-                    INSERT INTO bookstack_fts(rowid, title, content, tags)
-                    VALUES (new.id, new.title, new.content, new.tags);
-                END
-            """)
-
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS bookstack_fts_update
-                AFTER UPDATE ON bookstack_content BEGIN
-                    UPDATE bookstack_fts
-                    SET title = new.title, content = new.content, tags = new.tags
-                    WHERE rowid = new.id;
-                END
-            """)
-
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS bookstack_fts_delete
-                AFTER DELETE ON bookstack_content BEGIN
-                    DELETE FROM bookstack_fts WHERE rowid = old.id;
-                END
-            """)
-
-            # NEW: Chunk FTS triggers
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS bookstack_chunks_fts_insert
-                AFTER INSERT ON bookstack_chunks BEGIN
-                    INSERT INTO bookstack_chunks_fts(rowid, title, chunk_text, content_type)
-                    VALUES (new.id, new.title, new.chunk_text, new.content_type);
-                END
-            """)
-
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS bookstack_chunks_fts_update
-                AFTER UPDATE ON bookstack_chunks BEGIN
-                    UPDATE bookstack_chunks_fts
-                    SET title = new.title, chunk_text = new.chunk_text, content_type = new.content_type
-                    WHERE rowid = new.id;
-                END
-            """)
-
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS bookstack_chunks_fts_delete
-                AFTER DELETE ON bookstack_chunks BEGIN
-                    DELETE FROM bookstack_chunks_fts WHERE rowid = old.id;
-                END
-            """)
-
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """One connection per unit of work: commit on success, always close."""
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            yield conn
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
+    # Kept as a method for callers that used it before it moved to module level.
     def clean_html_content(self, html: str) -> str:
-        """
-        Clean HTML content for indexing
+        return clean_html_content(html)
 
-        Args:
-            html: Raw HTML from BookStack
-
-        Returns:
-            Cleaned text content
+    def _item_url(self, item: Dict, content_type: str) -> str:
         """
-        if not html:
+        The item's public URL.
+
+        BookStack returns `url` in list and `contents` entries but not in every
+        read response. Pages have a permalink by id; books and chapters need slugs.
+        """
+        if item.get("url"):
+            return item["url"]
+        if not self.external_url:
             return ""
-
-        # Remove HTML tags
-        text = re.sub(r"<[^>]+>", " ", html)
-
-        # Unescape HTML entities
-        text = unescape(text)
-
-        # Clean up whitespace
-        text = re.sub(r"\s+", " ", text)
-
-        return text.strip()
+        if content_type == "page":
+            return f"{self.external_url}/link/{item['id']}"
+        if content_type == "book" and item.get("slug"):
+            return f"{self.external_url}/books/{item['slug']}"
+        if content_type == "chapter" and item.get("slug") and item.get("book_slug"):
+            return (
+                f"{self.external_url}/books/{item['book_slug']}/chapter/{item['slug']}"
+            )
+        return ""
 
     def sync_all(self, prune: bool = True) -> Dict[str, int]:
         """
         Walk the whole BookStack API and reindex everything.
 
         This is the repair path for an index that has drifted, for instance after
-        webhooks failed silently for a while, or after a chapter was deleted before
-        v0.1.5 taught the endpoint to remove its pages.
+        webhooks failed silently for a while.
 
         Args:
             prune: Also delete index rows for content BookStack no longer reports.
@@ -211,144 +301,170 @@ class ContentSyncService:
         stats = {"books": 0, "chapters": 0, "pages": 0, "removed": 0, "errors": 0}
         seen: Set[Tuple[int, str]] = set()
 
-        try:
-            books = self.client.get_all_books()
+        # A full walk must see BookStack as it is now, not as cached minutes ago.
+        self.client.invalidate_cache()
+        self._walk_errors = 0
 
-            for book in books:
-                try:
-                    self.sync_book(book["id"], seen=seen)
-                    stats["books"] += 1
-                except Exception as e:
-                    logger.error(f"Error syncing book {book['id']}: {e}")
-                    stats["errors"] += 1
+        books = self.client.get_all_books()
+        for book in books:
+            if self.sync_book(book["id"], seen=seen):
+                stats["books"] += 1
+            else:
+                stats["errors"] += 1
 
-            stats["chapters"] = sum(1 for _, t in seen if t == "chapter")
-            stats["pages"] = sum(1 for _, t in seen if t == "page")
+        stats["chapters"] = sum(1 for _, t in seen if t == "chapter")
+        stats["pages"] = sum(1 for _, t in seen if t == "page")
+        stats["errors"] += self._walk_errors
 
-            # Prune only after a clean walk: if fetching books failed, `seen` is
-            # empty or partial and pruning would empty the index instead of fixing it.
-            if prune and not stats["errors"] and seen:
-                stats["removed"] = self.prune_index(seen)
-            elif prune:
-                logger.warning(
-                    "Skipping prune: the sync did not complete cleanly, so the "
-                    "set of live content is not trustworthy"
-                )
+        # Prune only after a clean walk: a book, chapter or page that failed to
+        # load is missing from `seen`, and pruning would delete it from the index.
+        if prune and not stats["errors"] and seen:
+            stats["removed"] = self.prune_index(seen)
+        elif prune:
+            logger.warning(
+                "Skipping prune: the sync did not complete cleanly, so the "
+                "set of live content is not trustworthy"
+            )
 
-            logger.info(f"Sync completed: {stats}")
-            return stats
+        logger.info(f"Sync completed: {stats}")
+        return stats
 
-        except Exception as e:
-            logger.error(f"Error during sync: {e}")
-            stats["errors"] += 1
-            return stats
-
-    def sync_book(self, book_id: int, seen: Optional[Set[Tuple[int, str]]] = None):
+    def sync_book(
+        self, book_id: int, seen: Optional[Set[Tuple[int, str]]] = None
+    ) -> bool:
         """
-        Sync a specific book and all its content
+        Sync a book with all its chapters and pages.
 
         Args:
             book_id: BookStack book ID
             seen: Optional set that collects the (id, type) pairs touched
+
+        Returns:
+            False if the book itself could not be loaded or stored
         """
         try:
             book = self.client.get_book(book_id)
             if not book:
-                logger.warning(f"Book {book_id} not found")
-                return
+                logger.warning(f"Book {book_id} could not be loaded")
+                return False
 
-            # Store book metadata
             self._store_content(
                 bookstack_id=book["id"],
                 type="book",
                 title=book.get("name", ""),
-                content=self.clean_html_content(book.get("description_html", "")),
-                url=book.get("url", ""),
+                content=clean_html_content(
+                    book.get("description_html") or book.get("description", "")
+                ),
+                url=self._item_url(book, "book"),
                 tags=book.get("tags", []),
             )
-
             if seen is not None:
                 seen.add((book["id"], "book"))
 
-            # Sync chapters
-            for chapter in book.get("chapters", []):
-                self.sync_chapter(chapter["id"], seen=seen)
-
-            # Sync direct pages
-            for page in book.get("pages", []):
-                self.sync_page(page["id"], seen=seen)
+            # The book read endpoint lists chapters and top-level pages together
+            # under `contents`; each chapter entry carries its pages as well.
+            for item in book.get("contents", []):
+                if item.get("type") == "chapter":
+                    ok = self.sync_chapter(item["id"], seen=seen)
+                elif item.get("type") == "page":
+                    ok = self.sync_page(item["id"], seen=seen, url=item.get("url"))
+                else:
+                    continue
+                if not ok:
+                    self._walk_errors += 1
+            return True
 
         except Exception as e:
             logger.error(f"Error syncing book {book_id}: {e}")
+            return False
 
     def sync_chapter(
         self, chapter_id: int, seen: Optional[Set[Tuple[int, str]]] = None
-    ):
+    ) -> bool:
         """
-        Sync a specific chapter and its pages
+        Sync a chapter and its pages.
 
         Args:
             chapter_id: BookStack chapter ID
             seen: Optional set that collects the (id, type) pairs touched
+
+        Returns:
+            False if the chapter itself could not be loaded or stored
         """
         try:
             chapter = self.client.get_chapter(chapter_id)
             if not chapter:
-                logger.warning(f"Chapter {chapter_id} not found")
-                return
+                logger.warning(f"Chapter {chapter_id} could not be loaded")
+                return False
 
-            # Store chapter metadata
             self._store_content(
                 bookstack_id=chapter["id"],
                 type="chapter",
                 title=chapter.get("name", ""),
-                content=self.clean_html_content(chapter.get("description_html", "")),
-                url=chapter.get("url", ""),
+                content=clean_html_content(
+                    chapter.get("description_html") or chapter.get("description", "")
+                ),
+                url=self._item_url(chapter, "chapter"),
                 book_id=chapter.get("book_id"),
                 tags=chapter.get("tags", []),
             )
-
             if seen is not None:
                 seen.add((chapter["id"], "chapter"))
 
-            # Sync pages in chapter
             for page in chapter.get("pages", []):
-                self.sync_page(page["id"], seen=seen)
+                if not self.sync_page(page["id"], seen=seen, url=page.get("url")):
+                    self._walk_errors += 1
+            return True
 
         except Exception as e:
             logger.error(f"Error syncing chapter {chapter_id}: {e}")
+            return False
 
-    def sync_page(self, page_id: int, seen: Optional[Set[Tuple[int, str]]] = None):
+    def sync_page(
+        self,
+        page_id: int,
+        seen: Optional[Set[Tuple[int, str]]] = None,
+        url: Optional[str] = None,
+    ) -> bool:
         """
-        Sync a specific page
+        Sync a single page.
 
         Args:
             page_id: BookStack page ID
             seen: Optional set that collects the (id, type) pairs touched
+            url: The page URL if the caller already knows it (webhook payload,
+                 book contents); otherwise derived from BOOKSTACK_EXTERNAL_URL
+
+        Returns:
+            False if the page could not be loaded or stored
         """
         try:
             page = self.client.get_page(page_id)
             if not page:
-                logger.warning(f"Page {page_id} not found")
-                return
+                logger.warning(f"Page {page_id} could not be loaded")
+                return False
 
-            # Store page content
+            # Drafts are private to their author and not part of the wiki yet
+            if page.get("draft"):
+                return True
+
             self._store_content(
                 bookstack_id=page["id"],
                 type="page",
                 title=page.get("name", ""),
-                content=self.clean_html_content(page.get("html", "")),
-                url=page.get("url", ""),
+                content=clean_html_content(page.get("html", "")),
+                url=url or self._item_url(page, "page"),
                 book_id=page.get("book_id"),
-                chapter_id=page.get("chapter_id"),
+                chapter_id=page.get("chapter_id") or None,
                 tags=page.get("tags", []),
             )
-
             if seen is not None:
                 seen.add((page["id"], "page"))
+            return True
 
         except Exception as e:
             logger.error(f"Error syncing page {page_id}: {e}")
+            return False
 
     def _store_content(
         self,
@@ -357,12 +473,12 @@ class ContentSyncService:
         title: str,
         content: str,
         url: str = "",
-        book_id: int = None,
-        chapter_id: int = None,
-        tags: List = None,
+        book_id: Optional[int] = None,
+        chapter_id: Optional[int] = None,
+        tags: Optional[list] = None,
     ):
         """
-        Store or update content in database with optional chunking
+        Upsert one item and replace its chunks, in a single transaction.
 
         Args:
             bookstack_id: ID from BookStack
@@ -374,22 +490,36 @@ class ContentSyncService:
             chapter_id: Parent chapter ID
             tags: List of tags
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
+        chunks = []
+        if self.chunking_service and content:
+            chunks = self.chunking_service.chunk_bookstack_content(
+                text=content,
+                bookstack_id=bookstack_id,
+                content_type=type,
+                title=title,
+                url=url,
+                book_id=book_id,
+                chapter_id=chapter_id,
+            )
 
-            # Convert tags to JSON string
-            import json
-
-            tags_json = json.dumps(tags or [])
-
-            # Store original content (mit lokaler Zeitzone)
-            sync_time = format_for_database()
-            cursor.execute(
+        with self._connect() as conn:
+            # ON CONFLICT ... DO UPDATE fires the UPDATE trigger, which keeps the
+            # FTS index consistent. INSERT OR REPLACE would delete the row without
+            # firing the DELETE trigger and leave stale terms behind.
+            conn.execute(
                 """
-                INSERT OR REPLACE INTO bookstack_content
+                INSERT INTO bookstack_content
                 (bookstack_id, type, title, content, url, book_id, chapter_id, tags, synced_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+                ON CONFLICT(bookstack_id, type) DO UPDATE SET
+                    title = excluded.title,
+                    content = excluded.content,
+                    url = excluded.url,
+                    book_id = excluded.book_id,
+                    chapter_id = excluded.chapter_id,
+                    tags = excluded.tags,
+                    synced_at = excluded.synced_at
+                """,
                 (
                     bookstack_id,
                     type,
@@ -398,110 +528,29 @@ class ContentSyncService:
                     url,
                     book_id,
                     chapter_id,
-                    tags_json,
-                    sync_time,
+                    json.dumps(tags or []),
+                    format_for_database(),
                 ),
             )
 
-            # Store chunks if chunking is enabled and content is substantial
-            # The chunking service will handle empty content check internally
-            if self.enable_chunking and self.chunking_service and content:
-                self._store_content_chunks(
-                    bookstack_id, type, title, content, url, book_id, chapter_id
-                )
-
-            conn.commit()
-            logger.debug(f"Stored {type} {bookstack_id}: {title}")
-
-    def _store_content_chunks(
-        self,
-        bookstack_id: int,
-        content_type: str,
-        title: str,
-        content: str,
-        url: str,
-        book_id: int = None,
-        chapter_id: int = None,
-    ):
-        """
-        Store content chunks for enhanced RAG retrieval
-
-        Args:
-            bookstack_id: ID from BookStack
-            content_type: Content type (book, chapter, page)
-            title: Content title
-            content: Cleaned text content
-            url: BookStack URL
-            book_id: Parent book ID
-            chapter_id: Parent chapter ID
-        """
-        try:
-            # Generate chunks using the chunking service
-            chunks = self.chunking_service.chunk_bookstack_content(
-                text=content,
-                bookstack_id=bookstack_id,
-                content_type=content_type,
-                title=title,
-                url=url,
-                book_id=book_id,
-                chapter_id=chapter_id,
-            )
-
-            if not chunks:
-                logger.warning(f"No chunks generated for {content_type} {bookstack_id}")
-                return
-
-            # Remove existing chunks for this content
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
+            if self.chunking_service:
+                conn.execute(
                     "DELETE FROM bookstack_chunks WHERE bookstack_id = ? AND content_type = ?",
-                    (bookstack_id, content_type),
+                    (bookstack_id, type),
                 )
-
-                # Prepare chunk data for batch insert
-                chunk_records = []
-                for chunk in chunks:
-                    chunk_data = chunk.to_dict()
-                    chunk_records.append(
-                        (
-                            chunk_data["bookstack_id"],
-                            chunk_data["content_type"],
-                            chunk_data["chunk_index"],
-                            chunk_data["chunk_text"],
-                            chunk_data["start_pos"],
-                            chunk_data["end_pos"],
-                            chunk_data["word_count"],
-                            chunk_data["title"],
-                            chunk_data["url"],
-                            chunk_data["book_id"],
-                            chunk_data["chapter_id"],
-                        )
-                    )
-
-                # Batch insert all chunks at once (much faster)
-                cursor.executemany(
+                conn.executemany(
                     """
                     INSERT INTO bookstack_chunks
                     (bookstack_id, content_type, chunk_index, chunk_text, start_pos, end_pos,
                      word_count, title, url, book_id, chapter_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    chunk_records,
+                    VALUES (:bookstack_id, :content_type, :chunk_index, :chunk_text,
+                            :start_pos, :end_pos, :word_count, :title, :url, :book_id,
+                            :chapter_id)
+                    """,
+                    [chunk.to_dict() for chunk in chunks],
                 )
 
-                conn.commit()
-
-            # Log chunking statistics
-            stats = self.chunking_service.get_chunk_statistics(chunks)
-            logger.info(
-                f"Chunked {content_type} {bookstack_id}: {stats['total_chunks']} chunks, "
-                f"avg {stats['avg_words_per_chunk']:.0f} words/chunk"
-            )
-
-        except Exception as e:
-            logger.error(f"Error chunking {content_type} {bookstack_id}: {e}")
-            # Continue without chunking - fallback to original content storage
+        logger.debug(f"Stored {type} {bookstack_id} ({len(chunks)} chunks): {title}")
 
     def remove_page_from_index(self, page_id: int):
         """
@@ -510,23 +559,16 @@ class ContentSyncService:
         Args:
             page_id: BookStack page ID
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-
-            # Remove from original content table
-            cursor.execute(
+        with self._connect() as conn:
+            conn.execute(
                 "DELETE FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
                 (page_id, "page"),
             )
-
-            # Remove from chunks table
-            cursor.execute(
+            conn.execute(
                 "DELETE FROM bookstack_chunks WHERE bookstack_id = ? AND content_type = ?",
                 (page_id, "page"),
             )
-
-            conn.commit()
-            logger.info(f"Removed page {page_id} from index (content and chunks)")
+        logger.info(f"Removed page {page_id} from index (content and chunks)")
 
     def remove_chapter_from_index(self, chapter_id: int) -> int:
         """
@@ -540,34 +582,29 @@ class ContentSyncService:
             chapter_id: BookStack chapter ID
 
         Returns:
-            Number of content rows removed (chunks follow via the delete triggers)
+            Number of content rows removed
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-
-            cursor.execute(
+        with self._connect() as conn:
+            conn.execute(
                 "DELETE FROM bookstack_chunks WHERE chapter_id = ?", (chapter_id,)
             )
-            cursor.execute(
+            conn.execute(
                 "DELETE FROM bookstack_chunks WHERE bookstack_id = ? AND content_type = ?",
                 (chapter_id, "chapter"),
             )
-            cursor.execute(
+            removed = conn.execute(
                 "DELETE FROM bookstack_content WHERE chapter_id = ?", (chapter_id,)
-            )
-            removed = cursor.rowcount
-            cursor.execute(
+            ).rowcount
+            removed += conn.execute(
                 "DELETE FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
                 (chapter_id, "chapter"),
-            )
-            removed += cursor.rowcount
+            ).rowcount
 
-            conn.commit()
-            logger.info(
-                f"Removed chapter {chapter_id} and its pages from index "
-                f"({removed} content rows)"
-            )
-            return removed
+        logger.info(
+            f"Removed chapter {chapter_id} and its pages from index "
+            f"({removed} content rows)"
+        )
+        return removed
 
     def remove_book_from_index(self, book_id: int) -> int:
         """
@@ -577,32 +614,27 @@ class ContentSyncService:
             book_id: BookStack book ID
 
         Returns:
-            Number of content rows removed (chunks follow via the delete triggers)
+            Number of content rows removed
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-
-            cursor.execute("DELETE FROM bookstack_chunks WHERE book_id = ?", (book_id,))
-            cursor.execute(
+        with self._connect() as conn:
+            conn.execute("DELETE FROM bookstack_chunks WHERE book_id = ?", (book_id,))
+            conn.execute(
                 "DELETE FROM bookstack_chunks WHERE bookstack_id = ? AND content_type = ?",
                 (book_id, "book"),
             )
-            cursor.execute(
+            removed = conn.execute(
                 "DELETE FROM bookstack_content WHERE book_id = ?", (book_id,)
-            )
-            removed = cursor.rowcount
-            cursor.execute(
+            ).rowcount
+            removed += conn.execute(
                 "DELETE FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
                 (book_id, "book"),
-            )
-            removed += cursor.rowcount
+            ).rowcount
 
-            conn.commit()
-            logger.info(
-                f"Removed book {book_id} and its contents from index "
-                f"({removed} content rows)"
-            )
-            return removed
+        logger.info(
+            f"Removed book {book_id} and its contents from index "
+            f"({removed} content rows)"
+        )
+        return removed
 
     def prune_index(self, keep: Set[Tuple[int, str]]) -> int:
         """
@@ -614,167 +646,29 @@ class ContentSyncService:
         Returns:
             Number of content rows removed
         """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT bookstack_id, type FROM bookstack_content")
+        with self._connect() as conn:
             stale = [
-                (row["bookstack_id"], row["type"])
-                for row in cursor.fetchall()
-                if (row["bookstack_id"], row["type"]) not in keep
+                (bookstack_id, content_type)
+                for bookstack_id, content_type in conn.execute(
+                    "SELECT bookstack_id, type FROM bookstack_content"
+                )
+                if (bookstack_id, content_type) not in keep
             ]
 
             for bookstack_id, content_type in stale:
-                cursor.execute(
+                conn.execute(
                     "DELETE FROM bookstack_chunks "
                     "WHERE bookstack_id = ? AND content_type = ?",
                     (bookstack_id, content_type),
                 )
-                cursor.execute(
+                conn.execute(
                     "DELETE FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
                     (bookstack_id, content_type),
                 )
 
-            conn.commit()
-            if stale:
-                logger.info(f"Pruned {len(stale)} stale rows from the index")
-            return len(stale)
-
-    def search(
-        self, query: str, limit: int = 10, use_chunks: bool = None
-    ) -> List[Dict]:
-        """
-        Search BookStack content with optional chunk-based retrieval
-
-        Args:
-            query: Search query
-            limit: Maximum results
-            use_chunks: Whether to use chunk-based search (auto-detect if None)
-
-        Returns:
-            List of search results
-        """
-        # Auto-detect chunking availability
-        if use_chunks is None:
-            use_chunks = self.enable_chunking and self._has_chunks()
-
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            if use_chunks:
-                # Enhanced chunk-based search
-                cursor.execute(
-                    """
-                    SELECT
-                        bc.bookstack_id,
-                        bc.content_type as type,
-                        bc.title,
-                        bc.url,
-                        bc.chunk_index,
-                        bc.word_count,
-                        snippet(bookstack_chunks_fts, 1, '<mark>', '</mark>', '...', 50) as snippet,
-                        'chunk' as result_type
-                    FROM bookstack_chunks_fts
-                    JOIN bookstack_chunks bc ON bookstack_chunks_fts.rowid = bc.id
-                    WHERE bookstack_chunks_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                """,
-                    (query, limit),
-                )
-            else:
-                # Original content-based search
-                cursor.execute(
-                    """
-                    SELECT
-                        bc.bookstack_id,
-                        bc.type,
-                        bc.title,
-                        bc.url,
-                        NULL as chunk_index,
-                        NULL as word_count,
-                        snippet(bookstack_fts, 1, '<mark>', '</mark>', '...', 30) as snippet,
-                        'content' as result_type
-                    FROM bookstack_fts
-                    JOIN bookstack_content bc ON bookstack_fts.rowid = bc.id
-                    WHERE bookstack_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                """,
-                    (query, limit),
-                )
-
-            results = []
-            for row in cursor.fetchall():
-                results.append(dict(row))
-
-            logger.debug(
-                f"Search '{query}' returned {len(results)} results ({'chunks' if use_chunks else 'content'})"
-            )
-            return results
-
-    def search_chunks(
-        self, query: str, limit: int = 10, content_type: str = None
-    ) -> List[Dict]:
-        """
-        Search specifically in chunks with optional content type filtering
-
-        Args:
-            query: Search query
-            limit: Maximum results
-            content_type: Filter by content type ('page', 'chapter', 'book')
-
-        Returns:
-            List of chunk search results
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            base_query = """
-                SELECT
-                    bc.bookstack_id,
-                    bc.content_type,
-                    bc.title,
-                    bc.url,
-                    bc.chunk_index,
-                    bc.word_count,
-                    bc.book_id,
-                    bc.chapter_id,
-                    snippet(bookstack_chunks_fts, 1, '<mark>', '</mark>', '...', 50) as snippet
-                FROM bookstack_chunks_fts
-                JOIN bookstack_chunks bc ON bookstack_chunks_fts.rowid = bc.id
-                WHERE bookstack_chunks_fts MATCH ?
-            """
-
-            params = [query]
-
-            if content_type:
-                base_query += " AND bc.content_type = ?"
-                params.append(content_type)
-
-            base_query += " ORDER BY rank LIMIT ?"
-            params.append(limit)
-
-            cursor.execute(base_query, params)
-
-            results = []
-            for row in cursor.fetchall():
-                results.append(dict(row))
-
-            return results
-
-    def _has_chunks(self) -> bool:
-        """Check if chunks are available in the database"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM bookstack_chunks LIMIT 1")
-                return cursor.fetchone()[0] > 0
-        except Exception:
-            return False
+        if stale:
+            logger.info(f"Pruned {len(stale)} stale rows from the index")
+        return len(stale)
 
     def get_sync_stats(self) -> Dict:
         """
@@ -783,63 +677,42 @@ class ContentSyncService:
         Returns:
             Dict with content counts, chunk stats and last sync time
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
+        with self._connect() as conn:
+            counts = dict(
+                conn.execute(
+                    "SELECT type, COUNT(*) FROM bookstack_content GROUP BY type"
+                ).fetchall()
+            )
+            chunk_counts = dict(
+                conn.execute(
+                    "SELECT content_type, COUNT(*) FROM bookstack_chunks "
+                    "GROUP BY content_type"
+                ).fetchall()
+            )
+            last_sync = conn.execute(
+                "SELECT MAX(synced_at) FROM bookstack_content"
+            ).fetchone()[0]
 
-            # Count by type (original content)
-            cursor.execute("""
-                SELECT type, COUNT(*) as count
-                FROM bookstack_content
-                GROUP BY type
-            """)
-
-            counts = {row[0]: row[1] for row in cursor.fetchall()}
-
-            # Count chunks by content type
-            chunk_counts = {}
-            if self.enable_chunking:
-                cursor.execute("""
-                    SELECT content_type, COUNT(*) as count
-                    FROM bookstack_chunks
-                    GROUP BY content_type
-                """)
-                chunk_counts = {row[0]: row[1] for row in cursor.fetchall()}
-
-            # Get last sync time
-            cursor.execute("""
-                SELECT MAX(synced_at) FROM bookstack_content
-            """)
-
-            last_sync = cursor.fetchone()[0]
-
-            # Chunking statistics
             chunking_stats = {}
-            if self.enable_chunking and chunk_counts:
-                cursor.execute("""
-                    SELECT
-                        COUNT(*) as total_chunks,
-                        AVG(word_count) as avg_words_per_chunk,
-                        MIN(word_count) as min_words,
-                        MAX(word_count) as max_words,
-                        SUM(word_count) as total_words
+            if chunk_counts:
+                total, avg, low, high, words = conn.execute("""
+                    SELECT COUNT(*), AVG(word_count), MIN(word_count),
+                           MAX(word_count), SUM(word_count)
                     FROM bookstack_chunks
-                """)
+                """).fetchone()
+                chunking_stats = {
+                    "total_chunks": total,
+                    "avg_words_per_chunk": round(avg or 0, 1),
+                    "min_words": low or 0,
+                    "max_words": high or 0,
+                    "total_words": words or 0,
+                    "chunks_by_type": chunk_counts,
+                }
 
-                stats_row = cursor.fetchone()
-                if stats_row:
-                    chunking_stats = {
-                        "total_chunks": stats_row[0],
-                        "avg_words_per_chunk": round(stats_row[1] or 0, 1),
-                        "min_words": stats_row[2] or 0,
-                        "max_words": stats_row[3] or 0,
-                        "total_words": stats_row[4] or 0,
-                        "chunks_by_type": chunk_counts,
-                    }
-
-            return {
-                "content_counts": counts,
-                "chunk_stats": chunking_stats,
-                "last_sync": last_sync,
-                "total_content": sum(counts.values()),
-                "chunking_enabled": self.enable_chunking,
-            }
+        return {
+            "content_counts": counts,
+            "chunk_stats": chunking_stats,
+            "last_sync": last_sync,
+            "total_content": sum(counts.values()),
+            "chunking_enabled": self.enable_chunking,
+        }

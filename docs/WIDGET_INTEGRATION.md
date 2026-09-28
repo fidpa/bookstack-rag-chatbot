@@ -24,11 +24,27 @@ Reload any wiki page. The chat bubble appears in the lower-right corner.
 
 - On `localhost`, `127.0.0.1` or `::1`, it posts to `http://<hostname>:8888/chat/api/widget`,
   the chatbot's published port.
-- Anywhere else, it posts to `<protocol>//<hostname>/chat/api/widget`, same-origin, and
-  expects a reverse proxy to forward `/chat/api/` to the chatbot.
+- Anywhere else, it posts to `<origin>/chat/api/widget`, where the origin is the page's
+  own scheme, host and port, and expects a reverse proxy to forward `/chat/api/` to the
+  chatbot. Before v0.3.0 the port was dropped, so BookStack served on a non-default port
+  posted to the wrong address.
 
 Both branches log the chosen URL to the browser console under `[Widget]`, which is the
 quickest way to see what it decided.
+
+## Conversation sessions
+
+The first answer carries a `session_id` the chatbot issued. The widget keeps it in the
+tab's `sessionStorage` and sends it back as the `X-Widget-Session` header, so follow-up
+questions see the last ten messages of the conversation. The id is only honoured while
+the server still holds the session (30 minutes of inactivity, and not across a restart);
+otherwise a new one starts. Other clients can send the id in the JSON body as
+`session_id` instead.
+
+With every question the widget sends the current page as `bookstack_context`: title,
+URL, breadcrumbs and up to 20,000 characters of the page text. That text goes into the
+prompt as context for questions like "summarise this page"; it does not influence the
+search.
 
 ## Configuration: there is none yet
 
@@ -64,26 +80,28 @@ only one.
 
 ```nginx
 location /chat/api/ {
-    proxy_pass http://chatbot.internal:8888/chat/api/;
+    proxy_pass http://chatbot.internal:8888;
     proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $remote_addr;
     proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 180;
 }
 ```
 
-A starter template is at [`docker/nginx-example.conf`](../docker/nginx-example.conf).
+[`docker/nginx-example.conf`](../docker/nginx-example.conf) is a complete server block
+with this location and the BookStack one.
 
 ### 2. Decide what the allow-list sees
 
-`_client_ip()` in `chatbot/utils/rate_limiter.py` reads the first entry of
-`X-Forwarded-For` when the header is present, and falls back to `REMOTE_ADDR`. With the
-proxy config above, `ALLOWED_VPN_IPS` therefore matches the **visitor's** IP, not the
-proxy's, and the per-IP rate limit counts per visitor.
+By default the chatbot checks the connecting address, which behind the proxy is the
+proxy's for every visitor. Set `TRUSTED_PROXY_HOPS=1` and the chatbot takes the
+visitor's address from the entry the proxy put into `X-Forwarded-For`, so
+`ALLOWED_VPN_IPS` matches visitors and the rate limit counts per visitor. Entries a
+client sent itself are ignored.
 
-The flip side is that the header is trusted as sent. If the proxy is reachable from the
-public internet, it has to strip inbound `X-Forwarded-For` before setting its own, or
-anyone can name their own source IP. See [SECURITY.md](SECURITY.md).
+That trust is only sound if clients cannot reach port 8888 around the proxy; publish
+the proxy, not the chatbot. See [SECURITY.md](SECURITY.md).
 
 ## Embedding Elsewhere
 

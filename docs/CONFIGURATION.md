@@ -10,32 +10,33 @@ Purpose column and repeated in the checklist in [SECURITY.md](SECURITY.md).
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `SECRET_KEY` | No, but set it | `chatbot-dev-secret-change-in-production` | Flask session signing key. `chatbot/config.py` falls back to that literal and the app starts silently, so an unset key means sessions are signed with a value published in this repository. Generate with `openssl rand -hex 32`. |
-| `TZ` | No | `UTC` | Timezone for log timestamps and containers. Use IANA names (e.g. `Europe/Berlin`). |
-| `FLASK_ENV` | No | `production` | `production` or `development`. Development enables debug pages and verbose tracebacks. |
-| `FLASK_DEBUG` | No | `false` | Enable Flask debug mode. With it on, Flask serves tracebacks to the client and `/debug` returns the URL map instead of a 403, so leave it off outside development. |
-| `LOG_LEVEL` | No | `INFO` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
+| `SECRET_KEY` | No, but set it | `chatbot-dev-secret-change-in-production` | Flask's signing key. The app sets no cookies today, but `chatbot/config.py` falls back to a literal published in this repository, so set a real one before anything starts relying on it. Generate with `openssl rand -hex 32`. |
+| `TZ` | No | `UTC` | Timezone of log timestamps and of the sync time stored with each indexed item, and of the containers. IANA names, e.g. `Europe/Berlin`. An unknown name falls back to UTC. |
+| `FLASK_DEBUG` | No | `false` | `true` makes `/debug` return the URL map instead of a 403. The container always runs waitress, so this never enables Flask's interactive debugger; only `python app.py` does that, bound to 127.0.0.1. |
+| `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR`, for the app and for `resync.py`. At `INFO` the log carries the keywords of each question; `WARNING` keeps question content out of it. |
 
 ## LLM Providers
 
-At least one provider must be configured. `create_llm_provider()` in
-`chatbot/llm/factory.py` tries Azure first and Ollama second, and raises rather than
-falling back further when neither answers.
+At least one provider must be configured. `get_llm_provider()` in
+`chatbot/llm/factory.py` returns Azure when it is configured, else Ollama when it is
+enabled and reachable, else nothing; the widget then answers with a notice that no AI
+service is available.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `AZURE_OPENAI_API_KEY` | If using Azure | none | Azure OpenAI API key. The provider is only considered when this **and** `AZURE_OPENAI_ENDPOINT` are set. |
 | `AZURE_OPENAI_ENDPOINT` | If using Azure | none | Full endpoint URL, e.g. `https://my-resource.openai.azure.com/`. |
 | `AZURE_OPENAI_API_VERSION` | No | `2025-01-01-preview` | API version. |
-| `AZURE_OPENAI_DEPLOYMENT_NAME` | If using Azure | `gpt-4o-mini` | Name of the deployment in Azure (not the model name). |
+| `AZURE_OPENAI_DEPLOYMENT_NAME` | If using Azure | `gpt-4o-mini` in compose | Name of the deployment in Azure (not the model name). Without it the code falls back to `gpt-35-turbo`. |
 | `OLLAMA_BASE_URL` | If using Ollama | `http://host.docker.internal:11434` | URL of an Ollama instance reachable from the chatbot container. |
-| `ENABLE_OLLAMA_FALLBACK` | No | `false` | Set to `true` to allow Ollama as a fallback when other providers are unset. Disabled by default for safety. |
+| `OLLAMA_MODEL` | No | `mistral:latest` | Ollama model tag. It must be pulled (`ollama pull mistral`), otherwise the provider counts as unavailable. |
+| `ENABLE_OLLAMA_FALLBACK` | No | `false` | Set to `true` to allow Ollama when Azure is not configured. Disabled by default, so a missing Azure key does not silently hand answers to a weaker local model. |
 
 ## BookStack Integration
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `BOOKSTACK_EXTERNAL_URL` | Yes | `http://localhost:6875` | Public URL of BookStack. Used in widget source citations. |
+| `BOOKSTACK_EXTERNAL_URL` | Yes | `http://localhost:6875` | Public URL of BookStack, as browsers see it. Its origin is the allowed CORS origin of the widget API and the only origin `/chat/widget` accepts page context from; `/` redirects to it; page links in the index are built on it when the API does not return one. |
 | `BOOKSTACK_PORT` | No | `6875` | Host port that BookStack is published on. |
 | `BOOKSTACK_APP_KEY` | Yes (BookStack) | none | BookStack's APP_KEY. Generate once and pin. See `.env.example` for the command. |
 | `BOOKSTACK_TOKEN_ID` | Yes | none | BookStack API token ID. Create in BookStack: My Account → API Tokens. |
@@ -54,17 +55,19 @@ falling back further when neither answers.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `CHATBOT_PORT` | No | `8888` | Host port for the chatbot's HTTP API. |
-| `CHATBOT_SYSTEM_PROMPT` | No | see below | Replaces the widget's default system prompt wholesale. The default is the literal in `chatbot/chat/widget_service.py`, which tells the model to use both sources, cite them briefly, say so when the sources do not answer, and reply in the user's language. |
-| `DATABASE_PATH` | No | `/app/data/chatbot.db` in the container | SQLite file. Set in `docker-compose.yml`; without it `chatbot/config.py` falls back to `chatbot/data/chatbot.db` next to the code. The admin CLI reads the same variable. |
-| `BOOKSTACK_API_URL` | No | `http://bookstack:80` | Where the chatbot reaches the BookStack API. Set in `docker-compose.yml` to the Docker-internal hostname; `BOOKSTACK_EXTERNAL_URL` is the separate public URL used in citations. |
+| `CHATBOT_SYSTEM_PROMPT` | No | see below | Replaces the widget's default system prompt wholesale. Empty or unset means the default, `DEFAULT_SYSTEM_PROMPT` in `chatbot/chat/widget_service.py`, which tells the model to use both sources, cite them briefly, say so when the sources do not answer, and reply in the user's language. |
+| `DATABASE_PATH` | No | `/app/data/chatbot.db` in the container | SQLite file. Without it, every component falls back to `chatbot/data/chatbot.db` next to the code (`utils/database.get_db_path()`). `resync.py`, `kb_admin.py` and `init_kb_schema.py` read the same variable. Uploaded files are stored in `knowledge_base/` next to it. |
+| `BOOKSTACK_API_URL` | No | `http://bookstack:80` | Where the chatbot reaches the BookStack API. Set in `docker-compose.yml` to the Docker-internal hostname. |
+| `PORT` | No | `8888` | Port for `python app.py` (local development only; the container ignores it). |
 
 ## Access Control
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `ALLOWED_VPN_IPS` | No, but set it | empty | Comma-separated CIDRs allowed to reach `/chat/api/*` and `/webhook/bookstack`. Example: `10.0.0.0/8,192.168.0.0/16`. **Empty means allow all**, logged once as a warning at startup. A non-empty value with no parseable CIDR denies everything instead. |
+| `ALLOWED_VPN_IPS` | No, but set it | empty | Comma-separated CIDRs allowed to reach `/chat/api/*` and `/webhook/bookstack`. Example: `10.0.0.0/8,192.168.0.0/16`. **Empty means allow all**, logged as a warning on the first guarded request. A non-empty value with no parseable CIDR denies everything instead. Webhooks come from the BookStack container, so include the Docker network (e.g. `172.16.0.0/12`). |
 | `IP_ACCESS_CONTROL` | No | `true` | Set to `false` to bypass the allow-list (development only). |
-| `RATE_LIMIT_PER_MINUTE` | No | `30` | Sliding-window per-IP limit on `/chat/api/widget`. Read at decoration time; a non-integer value logs a warning and falls back to 30. |
+| `RATE_LIMIT_PER_MINUTE` | No | `30` | Sliding-window per-IP limit on `/chat/api/widget`. Read at startup; a non-integer value logs a warning and falls back to 30. |
+| `TRUSTED_PROXY_HOPS` | No | `0` | How many reverse proxies to look through for the client address. `0`: `X-Forwarded-For` is ignored and the connecting address counts. `1`: the entry the proxy appended counts (werkzeug `ProxyFix`); entries a client sent are ignored. Set it only if port 8888 is unreachable around the proxy. |
 
 ## Hidden / Advanced
 
@@ -72,20 +75,20 @@ These knobs live in Python, not env vars. Edit the listed file to change.
 
 | Setting | Default | Where | Purpose |
 |---|---|---|---|
-| `BookStackChunkingService.DEFAULTS['chunk_size']` | `800` (words) | `chatbot/bookstack/chunking.py` | Target chunk size for indexing. |
-| `BookStackChunkingService.DEFAULTS['overlap']` | `150` (words, 19 % of `chunk_size`) | same | Overlap between consecutive chunks. Must be smaller than `chunk_size`; the constructor raises otherwise. |
-| `BookStackChunkingService.DEFAULTS['min_size']` | `80` (words) | same | Chunks smaller than this are merged forward. |
+| `BookStackChunkingService.DEFAULTS` | `chunk_size` 800, `overlap` 150, `min_size` 80 (words) | `chatbot/bookstack/chunking.py` | Chunking of wiki pages. `overlap` must be smaller than `chunk_size`. |
+| `ChunkingService.DEFAULTS` | `chunk_size` 1000, `overlap` 200, `min_size` 100 (words) | `chatbot/documents/knowledge_base/services/chunking.py` | Chunking of uploaded documents. Both use `chatbot/utils/text_chunking.py`. |
+| `ContextService.MAX_CONTEXT_DOCS` | `3` | `chatbot/documents/knowledge_base/services/context.py` | Documents (wiki items or uploads) that contribute excerpts, up to three excerpts each. |
+| `ChatContextBuilder.PAGE_CONTEXT_CHARS` | `20000` | `chatbot/chat/context_builder.py` | Characters of the page the visitor is on that go into the prompt. |
+| `SYNONYMS` | empty | `chatbot/documents/knowledge_base/services/query_processor/constants.py` | Query expansion per keyword, for your wiki's vocabulary. |
 | `Config.MAX_CONTENT_LENGTH` | `16 MB` | `chatbot/config.py` | Flask's request-body cap. |
-| `MAX_FILE_SIZE` | `20 MB` | `chatbot/documents/knowledge_base/validators.py` | Knowledge-base upload cap. The lower Flask limit wins for anything going over HTTP. |
-| `ALLOWED_EXTENSIONS` | `pdf, docx, doc, txt, md, csv, xlsx, xls` | same file | Accepted upload types. |
+| `ALLOWED_EXTENSIONS` | `.pdf .docx .txt .md .markdown` | `chatbot/documents/knowledge_base/validators.py` | Upload types `kb_admin.py` accepts: the ones text can be extracted from. |
 
 ## Tuning Recipes
 
 ### "Reduce LLM cost"
 
-Trim the retrieved context the LLM sees. There is no env knob for this today;
-the simplest lever is the chunking config: fewer, smaller chunks lower the
-total context payload:
+Trim the retrieved context the LLM sees. The levers are `MAX_CONTEXT_DOCS`,
+`PAGE_CONTEXT_CHARS` and the chunk size; smaller chunks lower the context payload:
 
 ```python
 # chatbot/bookstack/chunking.py
@@ -102,16 +105,17 @@ questions with fewer chunks in the prompt:
 DEFAULTS = {'chunk_size': 1200, 'overlap': 200, 'min_size': 100}
 ```
 
-After changing chunking parameters, re-run the index:
+After changing the wiki chunking, rebuild the BookStack index:
 
 ```bash
-PYTHONPATH=chatbot python3 scripts/kb_admin.py index rebuild --force
+docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
 ```
 
-The CLI runs on the host only and needs `PYTHONPATH`; see
-[KB_ADMIN_CLI.md](KB_ADMIN_CLI.md). These knobs govern **BookStack** chunking only;
-uploaded documents are chunked by
-`chatbot/documents/knowledge_base/services/chunking.py`.
+After changing the upload chunking, reindex the uploads:
+
+```bash
+python3 scripts/kb_admin.py index rebuild --force
+```
 
 ### "Handle a large wiki (>10k pages)"
 

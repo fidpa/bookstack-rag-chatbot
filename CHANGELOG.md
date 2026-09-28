@@ -7,6 +7,222 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-28: Webhooks, full resyncs and chunk search work, and the index no longer corrupts itself
+
+### Fixed
+- **BookStack webhooks update the index.** The handler read the item id from
+  `related.<type>.id`; BookStack's `WebhookFormatter` sends it as `related_item.id`. Every
+  real delivery was answered `processed` and changed nothing, so the index only moved
+  when someone ran a full resync. v0.2.0 adjusted the documented test payload to the
+  handler instead of the other way round; both now use `related_item`. A payload without
+  the id is answered with 400 instead of `processed`.
+- **A full resync indexes pages and chapters.** `sync_book()` read `book["chapters"]` and
+  `book["pages"]`; BookStack's book endpoint lists both under `contents`. The walk stored
+  the book rows only, and the prune step then deleted every page and chapter, which is
+  what the v0.2.0 upgrade notes told operators to run. The book list is now paged through
+  in batches of 500 instead of stopping at BookStack's default page of 100.
+- **Wiki chunks are stored.** `_store_content()` kept its write transaction open and
+  `_store_content_chunks()` wrote on a second connection, which waited for the lock, gave
+  up after SQLite's 5 s timeout and had its error swallowed. `bookstack_chunks` stayed
+  empty in every installation and each synced item cost 5 s (measured on a scratch
+  database: 5.0 s per item, 0 chunk rows). Content and chunks are now written in one
+  transaction.
+- **The full-text indexes no longer corrupt on update or delete.** All three FTS5 tables
+  use external content, and their triggers removed old rows with plain `DELETE` and
+  `UPDATE` statements, which read the terms to remove from the content table after the
+  change. Old terms stayed in the index; a query for a word only the previous version of
+  a page contained failed with `database disk image is malformed`, and a deleted page's
+  terms could match an unrelated new row. The triggers now use FTS5's `'delete'` command,
+  and BookStack items are upserted with `ON CONFLICT DO UPDATE`, because
+  `INSERT OR REPLACE` did not fire the delete trigger at all.
+- **Books, chapters and pages with the same id coexist.** `bookstack_content` declared
+  `bookstack_id` unique on its own, while BookStack numbers each type separately, so
+  syncing book 1 replaced page 1. The key is now `(bookstack_id, type)`.
+- **A resync that cannot load an item no longer prunes it.** API errors are turned into
+  empty results by the client, and `sync_book()` caught its own exceptions, so a book or
+  page that timed out during the walk counted as deleted. Every book, chapter and page
+  that fails to load now counts as an error, and any error skips the prune.
+- **Conversations keep their history.** The widget sent its session id only as the
+  `X-Widget-Session` header and ignored the id in the answer; the server read the id from
+  the body and only accepted ids it had issued. Every message started a new session, so
+  the model never saw an earlier turn, and each message left one more session in memory.
+  The server now reads the header as well, and both widgets store the id it returns.
+- **The Compose stack runs with the system prompt.** `docker-compose.yml` passes
+  `CHATBOT_SYSTEM_PROMPT` through as an empty string when it is unset, and
+  `os.getenv(name, default)` returns that empty string, so the model got no instructions
+  at all. An empty value now means the built-in prompt.
+- **Questions containing an upper-case `NOT`, `AND` or `NEAR` find wiki content.** Search
+  terms reached FTS5 as bare words, so these became operators, the query failed with a
+  syntax error, and every BookStack search returned nothing. All terms are now quoted
+  (`query_processor/preprocessor.py`). The exact-phrase strategy, which quoted an
+  `OR`-joined string, and the proximity strategy, which built invalid `NEAR()` syntax
+  from hyphenated keywords, match again. A question without any searchable word skips
+  the search instead of searching for the German word "dokument".
+- **The model sees the matching wiki text, not a 50-token snippet.** Wiki hits reached
+  the prompt as the FTS5 `snippet()` of the match; they now carry the full text of their
+  best chunks, up to three per page. The page-level and chunk-level hits of one page
+  share an id and merge in the fusion, so a page takes one context slot instead of two.
+- **Uploaded documents are indexed and deletable.** Indexing wrote to `kb_chunk_stats`
+  and `kb_search_fts`, and deleting to `kb_search_fts`; no schema ever created either
+  table, so every upload ended with `no such table` and no chunks, and every delete
+  failed. The writes are gone. Deleting a document now also removes its chunks: the
+  schema's `ON DELETE CASCADE` never applied, because SQLite enforces it only with
+  `PRAGMA foreign_keys=ON`.
+- **Chunks stay bounded, and short sentences survive.** Both chunkers collapsed all
+  whitespace before splitting on paragraphs, so a page of list items or table rows
+  without sentence punctuation became one chunk of any size (a list of 1,200 items came
+  out as a single chunk; it now yields 11 chunks of at most 798 words). Sentences of ten
+  characters or less, such as "Port 8080.", were dropped. HTML cleaning now keeps one
+  line per block element.
+- **Chunk-search scores no longer favour the weakest matches.** `abs()` on the FTS5 rank
+  followed by `1 / (1 + rank)` inverted the order. Every strategy now scores a hit as its
+  weight times its bm25 relevance relative to the best hit, where wiki hits used to get
+  a constant. The multi-strategy bonus counts each strategy once per document, and a
+  keyword search attaches a snippet to every document instead of only the first.
+- **`kb_admin.py` runs.** It put the repository root on `sys.path` instead of `chatbot/`
+  and exited with `No module named 'documents'` unless `PYTHONPATH=chatbot` was set. On a
+  fresh stack it now creates the missing tables instead of exiting. `documents upload`
+  and `bulk upload` index what they upload; `index rebuild --force` reindexes instead of
+  only deleting the index; `bulk reindex` picks up pending documents; `index optimize`
+  commits before `VACUUM`; `index status` counts pending documents; `stats performance`
+  reads the `chunk_text` column that exists; `--skip-existing` compares SHA-256 hashes as
+  stored instead of MD5; the health check tests the real upload directory and runs FTS5's
+  integrity check.
+- **A fresh Docker volume is writable.** The image created `/app/data` as root, a new
+  named volume took over that ownership, and the container, running as uid 1000, failed
+  with `unable to open database file` (reproduced with the v0.2.0 Dockerfile). The
+  directory now belongs to uid 1000 and the image runs as that user.
+- **The widget reaches the API on BookStack instances with a port.** In production the
+  widget built its URL from protocol and hostname, dropping the port, so BookStack on
+  `https://wiki.example.com:8443` posted to port 443.
+- **`LOG_LEVEL` and `TZ` take effect.** Logging was fixed at `INFO` and log times at
+  Europe/Berlin regardless of either variable.
+
+### Security
+- **Forged `X-Forwarded-For` headers no longer pass the allow-list or dodge the rate
+  limit.** The client address was the leftmost header entry, which the client controls;
+  with port 8888 published, anyone could name an allowed address, and because stock
+  BookStack does not sign webhooks, that was enough to delete index content through a
+  fake `book_delete`. The address is now the connecting one; behind a reverse proxy,
+  `TRUSTED_PROXY_HOPS` tells werkzeug's `ProxyFix` how many proxy entries to trust, from
+  the right.
+- **The standalone chat page accepts page context only from BookStack.** Its `message`
+  listener took `bookstack-context` from any origin, so a page framing `/chat/widget`
+  could put text into the prompt. It now checks the origin of `BOOKSTACK_EXTERNAL_URL`.
+- **Error responses no longer carry exception text.** The widget API returned `str(e)`
+  as `details`, and the Azure provider returned raw error messages as chat answers,
+  which also went into the conversation history. Visitors now see a short notice; the
+  detail is logged, and a failed turn is not stored.
+- **Timeouts bound every outbound call.** BookStack API requests had none, and Azure
+  calls ran with the SDK's 600 s default and two internal retries plus six tenacity
+  attempts, while waitress serves with four threads. BookStack calls now time out after
+  30 s, Azure attempts after 60 s with three attempts in total, and the tenacity handlers
+  see the real exception (`reraise=True`) instead of `RetryError`.
+- **Sessions and rate-limit counters are thread-safe and bounded.** Both lived in plain
+  dicts shared by the waitress threads; session cleanup iterated while other threads
+  inserted, and neither structure ever shrank. Both are now guarded by locks; sessions
+  are capped at 5000, and the rate limiter forgets clients idle for a minute.
+- **`python app.py` binds to 127.0.0.1.** It ran Flask's debugger on all interfaces.
+
+### Added
+- **A test suite that runs in CI.** 63 pytest tests under `tests/` cover chunking, FTS5
+  query building, the sync service, the webhook endpoint, the widget API and end-to-end
+  retrieval against a temporary database and a fake BookStack API; `lint.yml` runs them
+  on every push. The two former scripts were not tests: one failed on import (it added
+  `tests/chatbot` to the path), the other needed a live BookStack and always exited 0.
+  The live check survives as `pytest -m integration`.
+- **`TRUSTED_PROXY_HOPS`** (default `0`) and **`OLLAMA_MODEL`** (default
+  `mistral:latest`; the model used to be fixed in code).
+- **The schema repairs itself at startup.** `startup_migrations.py` creates the BookStack
+  index and the knowledge-base tables, replaces an index built by an older version, and
+  warns when the BookStack index is empty. `kb_admin.py` and `scripts/init_kb_schema.py`
+  use the same code.
+- **`/health` reports the version**, read from the new `chatbot/version.py`.
+
+### Changed
+- **One chunking implementation.** `chatbot/utils/text_chunking.py` replaces the two
+  near-identical copies in `chatbot/bookstack/chunking.py` and
+  `chatbot/documents/knowledge_base/services/chunking.py`, which keep their own
+  defaults (800/150/80 and 1000/200/100 words).
+- **Retrieval searches the question only.** The widget's page text (up to 20,000
+  characters) was appended to the search query, so keyword extraction picked terms from
+  the page rather than from the question, and the page then went into the prompt twice.
+  It now goes into the prompt once, in full, as context.
+- **English stopwords and intent patterns** join the German ones, so English questions
+  no longer search for "what", "the" or "how". Keywords keep digits ("error 404").
+- **The context block is English** ("Relevant information from the knowledge base",
+  "Document", "Excerpt"), matching the English system prompt, and is left out when no
+  document contributed an excerpt instead of sending an empty heading.
+- **`bulk cleanup` only reports unless called with `--apply`**; it used to delete by
+  default. It removes chunks of documents that no longer exist, no longer those of
+  deactivated ones, and deletes old deactivated documents with their files and tags.
+- **Upload types are what text can be extracted from**: `.pdf`, `.docx`, `.txt`, `.md`,
+  `.markdown`. `ALLOWED_EXTENSIONS` listed `doc`, `csv`, `xlsx` and `xls` as well, which
+  the extraction never handled, while `kb_admin.py` checked a list of its own.
+- **Ollama requests a 16k-token context window** instead of 128k, and no longer forces
+  `num_gpu=40` for every model whose name contains "mistral"; both were settings of the
+  machine the code came from.
+- **CI:** `mypy` gates the build (93 errors on v0.2.0, 0 now), `ruff` and `black` cover
+  `samples/`, and the `shellcheck` job is gone: there is no shell script in the
+  repository for it to check.
+- **The documentation follows the code.** Setup gained the webhook step and the initial
+  resync that were missing, `docker/nginx-example.conf` routes `/chat/api/` to the
+  chatbot, and `SECURITY.md` supports the current 0.x line instead of a 1.x that does
+  not exist.
+
+### Removed
+- **Widget chat logging.** It meant to store every message with IP address and user
+  agent, but its migration file was never in the repository, so the tables did not exist
+  and every write failed silently. Removed rather than repaired: the documentation
+  promises that the backend keeps no user record. `kb_admin.py stats usage` and the query
+  statistics in `stats overview`, which read yet another table that nothing wrote, went
+  with it.
+- **Domain code from the original deployment**: the ICD-10 code boost and medical
+  synonym expansion in the query preprocessor (on by default; "x86 build fails" became
+  `X86 OR x86 OR build OR fails`), and psychology-specific synonyms. `SYNONYMS` ships
+  empty for your own entries.
+- **Dead code; the deleted files alone held 3,883 lines**: the unreferenced CSS and
+  JavaScript under `chatbot/static/`, `export.py`, `keyword_extraction.py`, `document_strategy.py`,
+  `suggestions.py`, three empty shim modules shadowed by same-named packages,
+  `utils/database.init_database()` with its outdated schema, streaming and model-catalogue
+  code in the LLM layer, and `bookstack-integration/api_client.py` and
+  `theme-functions.php`, a stale copy of the chatbot's API client and an empty stub.
+- **`FLASK_ENV`**, which nothing read and Flask 3 no longer supports, and the
+  undocumented `WINDOWS_HOST_IP` CORS origin.
+
+### Upgrade notes
+
+The BookStack index built by earlier versions has the wrong key and corrupting
+triggers. The first start of this version drops it and logs
+`Dropped the BookStack index built by an older version`; rebuild it from BookStack:
+
+    docker compose -f docker/docker-compose.yml up -d --build
+    docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+
+Uploaded documents keep their rows; their FTS index is repaired in place at startup.
+Chunking changed for them too, so reindex once:
+
+    DATABASE_PATH=/path/to/chatbot.db python3 scripts/kb_admin.py index rebuild --force
+
+Re-paste `bookstack-integration/widget.html` into BookStack's custom HTML head: the
+session and URL fixes live in that file.
+
+Behind a reverse proxy, set `TRUSTED_PROXY_HOPS=1`, otherwise the allow-list and the
+rate limit see the proxy's address for every visitor. Make sure port 8888 is not
+reachable around the proxy, and route `/chat/api/` as `docker/nginx-example.conf` shows.
+`ALLOWED_VPN_IPS` must include the Docker network (e.g. `172.16.0.0/12`) for webhooks
+to pass.
+
+Log times now follow `TZ`, which `docker-compose.yml` defaults to UTC; they were
+Europe/Berlin regardless. A `chatbot_data` volume created by an older image is still
+owned by root; if the chatbot logs `unable to open database file`, fix it once:
+
+    docker compose -f docker/docker-compose.yml run --rm --user root chatbot chown -R 1000:1000 /app/data
+
+`kb_admin.py bulk cleanup` needs `--apply` to delete. `kb_admin.py stats usage`, the
+`FLASK_ENV` and `WINDOWS_HOST_IP` variables and the `PYTHONPATH=chatbot` prefix are no
+longer needed or read.
+
 ## [0.2.0] - 2026-08-29: Wiki pages reach the answer, and deleting one removes it from the index
 
 ### Fixed

@@ -17,8 +17,8 @@ cd bookstack-rag-chatbot
 # Python tooling
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r chatbot/requirements.txt
-pip install ruff black mypy pytest
+pip install -r chatbot/requirements.txt   # includes pytest
+pip install ruff black mypy
 
 # Docker stack (BookStack + chatbot backend + MariaDB)
 cp .env.example .env
@@ -31,24 +31,34 @@ docker compose -f docker/docker-compose.yml up -d
 
 | Layer | Tooling | Command |
 |---|---|---|
-| Python | `ruff` + `black` | `ruff check . && black --check .` |
-| Python types | `mypy` | `mypy chatbot/` |
+| Python | `ruff` + `black` | `ruff check chatbot scripts tests samples && black --check chatbot scripts tests samples` |
+| Python types | `mypy` | `mypy --ignore-missing-imports chatbot` |
 | YAML | `yamllint` | `yamllint -d relaxed .` |
-| Shell | `shellcheck` | `shellcheck scripts/*.sh` |
 
-Run the full lint suite before pushing:
+These are the checks `.github/workflows/lint.yml` runs, and all of them gate the build.
+Run them before pushing:
 
 ```bash
-ruff check . && black --check . && mypy chatbot/
+ruff check chatbot scripts tests samples && black --check chatbot scripts tests samples \
+  && mypy --ignore-missing-imports chatbot && pytest -q
 ```
+
+New code, comments and log messages are English. Some older modules under
+`chatbot/documents/knowledge_base/` still carry German; the German stopword and intent
+lists in `query_processor/constants.py` are language data and stay.
 
 ## Tests
 
 ```bash
-pytest tests/
+pytest -q
 ```
 
-New features should ship with tests. Aim for >80 % coverage on changed code.
+The suite needs no BookStack, LLM or Docker: `tests/conftest.py` points `DATABASE_PATH`
+at a temporary file and provides a fake BookStack API. CI runs it on every push. Tests
+marked `integration` talk to a real BookStack and skip themselves unless
+`BOOKSTACK_TOKEN_ID` is set; see [tests/README.md](tests/README.md).
+
+New behaviour ships with a test, and a fixed bug with a test that fails without the fix.
 
 ## Commit Messages
 

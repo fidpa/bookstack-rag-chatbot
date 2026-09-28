@@ -1,6 +1,6 @@
 # BookStack RAG Chatbot
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)
 ![Docker](https://img.shields.io/badge/Docker-20.10%2B-blue?logo=docker)
@@ -25,13 +25,13 @@ Self-hosted wikis fill up with content that keyword search cannot find, and a pu
 
 ## ⚠️ Known Limitations
 
-> - ❌ **Stock BookStack does not sign its webhooks** (checked against v25.07). Authenticity rests on the IP allow-list, so your reverse proxy has to strip spoofed source IPs. The HMAC-SHA256 check in `chatbot/bookstack/webhooks.py` exists and switches on with `BOOKSTACK_WEBHOOK_SECRET`, but nothing sends the `X-BookStack-Signature` header until a custom plugin or a later BookStack release does.
+> - ❌ **Stock BookStack does not sign its webhooks** (checked against v25.07). Authenticity rests on the IP allow-list, which checks the connecting address; behind a reverse proxy set `TRUSTED_PROXY_HOPS=1` and keep port 8888 unreachable around the proxy (see [docs/SECURITY.md](docs/SECURITY.md)). The HMAC-SHA256 check in `chatbot/bookstack/webhooks.py` exists and switches on with `BOOKSTACK_WEBHOOK_SECRET`, but nothing sends the `X-BookStack-Signature` header until a custom plugin or a later BookStack release does.
 > - ❌ **An empty `ALLOWED_VPN_IPS` allows every source**, and `.env.example` ships it empty. Fill it in before the chatbot is reachable from anywhere but your own machine.
 > - ❌ **No storage abstraction.** SQLite access lives in four service classes under `chatbot/documents/knowledge_base/services/` (storage, indexing, search, context). There is no backend interface to implement, so moving to Postgres and `pgvector` means rewriting those four, not plugging into a seam. Only the LLM layer is abstracted today.
 > - ❌ **SQLite FTS5 is single-writer.** The deployment behind this repository indexes about 150 pages. The 10 000-page figure quoted in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is an estimate from FTS5's behaviour, not a measured ceiling.
 > - ❌ **Single-tenant.** One deployment serves one BookStack instance.
 > - ⚠️ **Ollama fallback is off by default** (`ENABLE_OLLAMA_FALLBACK=false`), so a missing Azure key fails loudly instead of quietly reaching for an unhardened local model. Turn it on explicitly.
-> - ⚠️ **Some internal docstrings and comments are still in German**, a legacy of the original production deployment. The user-facing surface (README, env vars, CLI, log messages) is English, with two exceptions: `chatbot/llm/factory.py` raises two German `ValueError` strings that reach the operator log. PRs translating internals are very welcome.
+> - ⚠️ **Some internal docstrings, comments and log messages are still in German**, a legacy of the original production deployment. They sit in the upload side of `chatbot/documents/knowledge_base/` (storage and the query analyzer). Everything a visitor sees, the env vars, the CLI and the rest of the code are English. The German stopword and intent lists in `query_processor/constants.py` are language data and stay. PRs translating the rest are welcome.
 
 ## Quick Start
 
@@ -67,7 +67,14 @@ pip install requests
 set -a; . ./.env; set +a
 python3 samples/load-samples.py
 
-# 7. Open BookStack again. The chat bubble sits in the lower-right corner.
+# 7. Index it. Webhooks keep the index current from here on once they are
+# set up (docs/BOOKSTACK_WEBHOOKS.md); content that existed before needs one
+# full sync.
+docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+
+# 8. Paste bookstack-integration/widget.html into BookStack's
+# Settings → Customization → Custom HTML Head Content, then reload a page.
+# The chat bubble sits in the lower-right corner.
 # Try: "What are Acme's core working hours?"
 ```
 
@@ -141,10 +148,10 @@ The knowledge-base code is split into four services (storage, indexing, search, 
 
 The factory in `chatbot/llm/factory.py` picks by what is configured:
 
-1. **Azure OpenAI**, when both `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` are set and the endpoint answers. This is what the production deployment runs.
-2. **Ollama**, only when `ENABLE_OLLAMA_FALLBACK=true` and the local instance answers.
+1. **Azure OpenAI**, when both `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` are set. There is no network probe; an unreachable endpoint shows up as a failed answer. This is what the production deployment runs.
+2. **Ollama**, only when `ENABLE_OLLAMA_FALLBACK=true`, the local instance answers and the model (`OLLAMA_MODEL`, default `mistral:latest`) is pulled.
 
-If neither is available, the request fails with an error that names the missing piece, rather than degrading silently. Switching providers is an env-var change and a container restart.
+If neither is available, the widget answers with a notice that no AI service is available and the operator log names the missing piece; nothing degrades silently. Switching providers is an env-var change and a container restart.
 
 ### Widget-only architecture
 
@@ -164,8 +171,10 @@ bookstack-rag-chatbot/
 ├── SECURITY.md
 ├── .env.example                  # Copy to .env and fill in
 ├── .gitignore
+├── pytest.ini
+├── ruff.toml
 ├── .github/workflows/
-│   ├── lint.yml                  # ruff + black + mypy + shellcheck + yamllint
+│   ├── lint.yml                  # ruff + black + mypy, pytest, yamllint
 │   └── release.yml               # Auto-release on git tag
 │
 ├── chatbot/                      # Flask RAG backend
@@ -173,24 +182,24 @@ bookstack-rag-chatbot/
 │   ├── requirements.txt
 │   ├── app.py                    # Flask entrypoint
 │   ├── config.py
-│   ├── startup_migrations.py     # Schema migration runner
+│   ├── version.py                # Release version (the README badge is the other copy)
+│   ├── startup_migrations.py     # Creates and repairs the schema on every start
+│   ├── resync.py                 # Full rebuild of the BookStack index
 │   ├── llm/                      # LLMProvider interface + Azure/Ollama
 │   ├── bookstack/                # BookStack API client + webhook handlers
 │   ├── chat/                     # Widget endpoint, session, prompt building
 │   ├── documents/                # RAG layer + knowledge-base management
-│   ├── utils/                    # Rate limiter, IP allow-list, DB helpers, timezone
-│   ├── static/                   # CSS / JS (loaded by Flask templates)
-│   └── templates/                # Jinja templates
+│   ├── utils/                    # Rate limiter, IP allow-list, DB helpers, chunking
+│   ├── static/                   # favicon
+│   └── templates/                # Standalone chat page, error pages
 │
-├── bookstack-integration/        # Drop-in BookStack assets
-│   ├── widget.html               # Paste into BookStack → Settings → Custom HTML head
-│   ├── api_client.py             # Reference API client (also used in tests)
-│   └── theme-functions.php       # Optional theme hook
+├── bookstack-integration/
+│   └── widget.html               # Paste into BookStack → Settings → Custom HTML head
 │
 ├── docker/
 │   ├── docker-compose.yml        # 3-service stack: bookstack, bookstack_db, chatbot
 │   ├── mariadb-optimized.cnf     # MariaDB tuning for small instances
-│   └── nginx-example.conf        # Optional reverse-proxy template
+│   └── nginx-example.conf        # Reverse proxy for BookStack and the widget API
 │
 ├── samples/                      # Acme Inc. fictional knowledge base
 │   ├── README.md
@@ -199,12 +208,12 @@ bookstack-rag-chatbot/
 │
 ├── scripts/
 │   ├── kb_admin.py               # Knowledge-base admin CLI
-│   └── init_kb_schema.py         # First-time schema init
+│   └── init_kb_schema.py         # Create (or --force recreate) the kb_* tables
 │
-├── tests/
+├── tests/                        # pytest, no BookStack or LLM needed
 │   ├── README.md
-│   ├── test_bookstack_api.py
-│   └── test_chunking_integration.py
+│   ├── conftest.py               # Temporary database, fake BookStack API
+│   └── test_*.py
 │
 └── docs/                         # Detailed documentation (DIATAXIS)
     ├── README.md
@@ -229,10 +238,11 @@ bookstack-rag-chatbot/
 | `chatbot/llm/providers/` | Azure OpenAI, Ollama implementations | `openai`, `requests` |
 | `chatbot/bookstack/api_client.py` | BookStack REST client | `requests` |
 | `chatbot/bookstack/webhooks.py` | Webhook endpoint for 13 BookStack events | Flask blueprint |
-| `chatbot/bookstack/chunking.py` | Chunking strategy for wiki pages | Sentence-aware sliding window |
+| `chatbot/bookstack/sync_service.py` | Index schema, sync walk, deletes, prune | SQLite FTS5 |
+| `chatbot/utils/text_chunking.py` | Chunking for wiki pages and uploads | Sentence- and line-aware sliding window |
 | `chatbot/documents/knowledge_base/` | KB ingestion (PDF/DOCX/MD), FTS5 indexing, hybrid search | `pypdfium2`, `pypdf`, `python-docx`, SQLite FTS5 |
 | `chatbot/chat/routes/api.py` | Widget query endpoint, guarded by allow-list and rate limit | Flask |
-| `chatbot/chat/widget_service.py` | Prompt assembly and session handling | Flask |
+| `chatbot/chat/widget_service.py` | Prompt assembly, in-memory conversation sessions | Flask |
 | `chatbot/utils/rate_limiter.py` | IP allow-list, sliding-window rate limit | `ipaddress`, in-memory store |
 | `bookstack-integration/widget.html` | Embeddable chat bubble | Vanilla JS, no build step |
 | `scripts/kb_admin.py` | Admin CLI (documents, bulk, index, stats, maintenance) | `argparse` subcommands |

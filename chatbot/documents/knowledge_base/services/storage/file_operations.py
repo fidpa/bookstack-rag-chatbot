@@ -43,7 +43,10 @@ def check_duplicate(content_hash: str) -> Optional[KnowledgeDocument]:
 
 
 def save_file(
-    file: FileStorage, title: str = "", description: str = "", tags: list = None
+    file: FileStorage,
+    title: str = "",
+    description: str = "",
+    tags: Optional[list] = None,
 ) -> Tuple[bool, str, Optional[KnowledgeDocument]]:
     """
     Speichert eine Datei permanent in der Wissensbasis
@@ -76,7 +79,7 @@ def save_file(
             )
 
         # Sichere Dateinamen generieren
-        original_filename = file.filename
+        original_filename = file.filename or "upload"
         extension = (
             original_filename.rsplit(".", 1)[-1].lower()
             if "." in original_filename
@@ -199,9 +202,11 @@ def delete_file(doc_id: int) -> Tuple[bool, str]:
             file_path = row["file_path"]
 
             # Aus Datenbank löschen
-            cursor.execute("DELETE FROM kb_documents WHERE id = ?", (doc_id,))
-            cursor.execute("DELETE FROM kb_search_fts WHERE doc_id = ?", (doc_id,))
+            # Explicit deletes: the schema declares ON DELETE CASCADE, but SQLite
+            # only enforces it with PRAGMA foreign_keys=ON, which is off by default.
+            cursor.execute("DELETE FROM kb_chunks WHERE doc_id = ?", (doc_id,))
             cursor.execute("DELETE FROM kb_tags WHERE document_id = ?", (doc_id,))
+            cursor.execute("DELETE FROM kb_documents WHERE id = ?", (doc_id,))
 
             # Datei löschen
             if os.path.exists(file_path):

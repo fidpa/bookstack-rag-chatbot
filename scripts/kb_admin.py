@@ -13,15 +13,25 @@ from datetime import datetime
 from typing import Dict, List, Any
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# The application modules live in chatbot/, next to this scripts/ directory
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chatbot"
+    ),
+)
 
 # Import Knowledge Base services
 try:
     from documents.knowledge_base.services.storage import StorageService
     from documents.knowledge_base.services.indexing import IndexingService
     from documents.knowledge_base.models import KnowledgeDocument  # noqa: F401
+    from bookstack.sync_service import ensure_bookstack_schema
+    from documents.knowledge_base.schema import ensure_kb_schema
+    from documents.knowledge_base.services.storage.file_operations import delete_file
+    from documents.knowledge_base.validators import ALLOWED_EXTENSIONS
     from utils.database import get_db_connection
+    from version import __version__
     from werkzeug.datastructures import FileStorage
 except ImportError as e:
     print(f"❌ Import error: {e}")
@@ -29,7 +39,7 @@ except ImportError as e:
     sys.exit(1)
 
 # CLI Configuration
-CLI_VERSION = "0.2.0"
+CLI_VERSION = __version__
 CLI_NAME = "kb_admin"
 
 
@@ -172,28 +182,13 @@ def format_output(response: CLIResponse, format_type: str = "table") -> str:
 
 
 def validate_database():
-    """Validate database connection and KB tables"""
+    """Create missing tables (the app shares this file), then check the connection."""
     try:
+        ensure_bookstack_schema()
+        ensure_kb_schema()
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-
-            # Check if KB tables exist
-            cursor.execute("""
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name IN ('kb_documents', 'kb_chunks', 'kb_tags')
-            """)
-
-            tables = [row["name"] for row in cursor.fetchall()]
-            required_tables = ["kb_documents", "kb_chunks", "kb_tags"]
-            missing_tables = set(required_tables) - set(tables)
-
-            if missing_tables:
-                print_error(f"Missing database tables: {', '.join(missing_tables)}")
-                print_info("Run application setup first to create required tables.")
-                return False
-
-            return True
-
+            conn.execute("SELECT 1 FROM kb_documents LIMIT 1")
+        return True
     except Exception as e:
         print_error(f"Database validation failed: {str(e)}")
         return False
@@ -331,13 +326,12 @@ class KBAdmin:
                 )
 
             # Validate file format
-            supported_extensions = [".pdf", ".docx", ".txt", ".md"]
             file_ext = Path(file_path).suffix.lower()
-            if file_ext not in supported_extensions:
+            if file_ext not in ALLOWED_EXTENSIONS:
                 return CLIResponse(
                     success=False,
                     message=f"Unsupported file format: {file_ext}",
-                    errors=[f"Supported formats: {', '.join(supported_extensions)}"],
+                    errors=[f"Supported formats: {', '.join(ALLOWED_EXTENSIONS)}"],
                 )
 
             # Create FileStorage object
@@ -356,16 +350,24 @@ class KBAdmin:
                 )
 
                 if success and document:
+                    # An upload is only searchable once it is chunked
+                    indexed, index_message = IndexingService.index_document(document.id)
                     response = CLIResponse(
-                        success=True,
+                        success=indexed,
                         data={
                             "id": document.id,
                             "title": document.title,
                             "filename": document.original_filename,
                             "size_bytes": document.file_size,
                             "hash": document.content_hash[:16],
+                            "indexing": index_message,
                         },
-                        message=f"Document uploaded successfully: {document.title}",
+                        message=(
+                            f"Document uploaded and indexed: {document.title}"
+                            if indexed
+                            else f"Document uploaded, indexing failed: {index_message}"
+                        ),
+                        errors=[] if indexed else [index_message],
                     )
                 else:
                     response = CLIResponse(
@@ -664,7 +666,9 @@ class KBAdmin:
                 else:
                     cursor.execute("""
                         SELECT id, title FROM kb_documents
-                        WHERE is_active = 1 AND (chunking_status IS NULL OR chunking_status = 'failed')
+                        WHERE is_active = 1
+                        AND (chunking_status IS NULL
+                             OR chunking_status IN ('pending', 'processing', 'failed'))
                     """)
 
                 documents = [
@@ -752,90 +756,58 @@ class KBAdmin:
                 cleanup_results = {
                     "orphaned_chunks": 0,
                     "old_deleted_docs": 0,
-                    "stale_sessions": 0,
                     "details": [],
                 }
 
-                # Find orphaned chunks
-                cursor.execute("""
-                    SELECT COUNT(*) as count FROM kb_chunks
-                    WHERE doc_id NOT IN (SELECT id FROM kb_documents WHERE is_active = 1)
-                """)
+                # Chunks whose document row is gone. Chunks of a document that is
+                # only deactivated stay: reactivating it must not need a reindex.
+                orphan_filter = "doc_id NOT IN (SELECT id FROM kb_documents)"
+                cursor.execute(
+                    f"SELECT COUNT(*) as count FROM kb_chunks WHERE {orphan_filter}"
+                )
                 orphaned_chunks = cursor.fetchone()["count"]
-
                 if orphaned_chunks > 0:
                     cleanup_results["orphaned_chunks"] = orphaned_chunks
                     cleanup_results["details"].append(
                         f"Found {orphaned_chunks} orphaned chunks"
                     )
-
                     if not dry_run:
-                        cursor.execute("""
-                            DELETE FROM kb_chunks
-                            WHERE doc_id NOT IN (SELECT id FROM kb_documents WHERE is_active = 1)
-                        """)
+                        cursor.execute(f"DELETE FROM kb_chunks WHERE {orphan_filter}")
+                        conn.commit()
 
-                # Find old deleted documents (soft-deleted)
-                cursor.execute(f"""
-                    SELECT COUNT(*) as count FROM kb_documents
-                    WHERE is_active = 0 AND uploaded_at < datetime('now', '-{older_than_days} days')
-                """)
-                old_deleted = cursor.fetchone()["count"]
-
-                if old_deleted > 0:
-                    cleanup_results["old_deleted_docs"] = old_deleted
+                # Deactivated documents older than the cut-off
+                cursor.execute(
+                    """
+                    SELECT id FROM kb_documents
+                    WHERE is_active = 0 AND uploaded_at < datetime('now', ?)
+                    """,
+                    (f"-{int(older_than_days)} days",),
+                )
+                old_ids = [row["id"] for row in cursor.fetchall()]
+                if old_ids:
+                    cleanup_results["old_deleted_docs"] = len(old_ids)
                     cleanup_results["details"].append(
-                        f"Found {old_deleted} old deleted documents"
+                        f"Found {len(old_ids)} deactivated documents older than "
+                        f"{older_than_days} days"
                     )
 
-                    if not dry_run:
-                        cursor.execute(f"""
-                            DELETE FROM kb_documents
-                            WHERE is_active = 0 AND uploaded_at < datetime('now', '-{older_than_days} days')
-                        """)
+            # Outside the connection above: delete_file opens its own and removes
+            # the file, the chunks and the tags along with the row.
+            if not dry_run:
+                for doc_id in old_ids:
+                    delete_file(doc_id)
 
-                # Clean up stale widget sessions (if widget_logs table exists)
-                try:
-                    cursor.execute("""
-                        SELECT COUNT(*) as count FROM widget_logs
-                        WHERE created_at < datetime('now', '-1 day')
-                    """)
-                    stale_sessions = cursor.fetchone()["count"]
-
-                    if stale_sessions > 0:
-                        cleanup_results["stale_sessions"] = stale_sessions
-                        cleanup_results["details"].append(
-                            f"Found {stale_sessions} old widget sessions"
-                        )
-
-                        if not dry_run:
-                            cursor.execute("""
-                                DELETE FROM widget_logs
-                                WHERE created_at < datetime('now', '-1 day')
-                            """)
-                except Exception:
-                    # widget_logs table doesn't exist - skip
-                    pass
-
-                if not dry_run:
-                    conn.commit()
-
-                action_text = "Would clean up" if dry_run else "Cleaned up"
-                total_items = sum(
-                    [
-                        cleanup_results["orphaned_chunks"],
-                        cleanup_results["old_deleted_docs"],
-                        cleanup_results["stale_sessions"],
-                    ]
-                )
-
-                message = f"{action_text}: {total_items} items"
-
-                response = CLIResponse(
-                    success=True, data=cleanup_results, message=message
-                )
-                response.set_duration(start_time)
-                return response
+            action_text = "Would clean up" if dry_run else "Cleaned up"
+            total_items = (
+                cleanup_results["orphaned_chunks"] + cleanup_results["old_deleted_docs"]
+            )
+            response = CLIResponse(
+                success=True,
+                data=cleanup_results,
+                message=f"{action_text}: {total_items} items",
+            )
+            response.set_duration(start_time)
+            return response
 
         except Exception as e:
             response = CLIResponse(
@@ -851,7 +823,7 @@ class KBAdmin:
 
             # Calculate file hash
             with open(file_path, "rb") as f:
-                file_hash = hashlib.md5(f.read()).hexdigest()
+                file_hash = hashlib.sha256(f.read()).hexdigest()  # as StorageService
 
             filename = os.path.basename(file_path)
 
@@ -890,7 +862,7 @@ class KBAdmin:
                         SUM(CASE WHEN chunking_status = 'completed' THEN 1 ELSE 0 END) as indexed,
                         SUM(CASE WHEN chunking_status = 'processing' THEN 1 ELSE 0 END) as processing,
                         SUM(CASE WHEN chunking_status = 'failed' THEN 1 ELSE 0 END) as failed,
-                        SUM(CASE WHEN chunking_status IS NULL THEN 1 ELSE 0 END) as pending
+                        SUM(CASE WHEN chunking_status IS NULL OR chunking_status = 'pending' THEN 1 ELSE 0 END) as pending
                     FROM kb_documents
                     WHERE is_active = 1
                 """)
@@ -908,8 +880,11 @@ class KBAdmin:
 
                 recent_activity = [dict(row) for row in cursor.fetchall()]
 
-                # FTS index health
-                cursor.execute("SELECT COUNT(*) as fts_entries FROM kb_chunks_fts")
+                # Rows in the FTS index itself; COUNT(*) on the virtual table
+                # would count kb_chunks through the external-content link
+                cursor.execute(
+                    "SELECT COUNT(*) as fts_entries FROM kb_chunks_fts_docsize"
+                )
                 fts_stats = cursor.fetchone()
 
                 # Problem documents
@@ -966,19 +941,7 @@ class KBAdmin:
                         success=False, message=f"Document not found: {document_id}"
                     )
 
-                # Clear existing chunks
-                with get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "DELETE FROM kb_chunks WHERE doc_id = ?", (document_id,)
-                    )
-                    cursor.execute(
-                        "UPDATE kb_documents SET chunking_status = NULL, chunk_count = 0 WHERE id = ?",
-                        (document_id,),
-                    )
-                    conn.commit()
-
-                # Trigger reindexing
+                # index_document replaces the document's chunks
                 success, _ = IndexingService.index_document(document_id)
 
                 if success:
@@ -994,49 +957,9 @@ class KBAdmin:
                     )
 
             else:
-                # Rebuild all documents
-                with get_db_connection() as conn:
-                    cursor = conn.cursor()
-
-                    if force:
-                        # Clear all chunks and reset status
-                        cursor.execute("DELETE FROM kb_chunks")
-                        cursor.execute(
-                            "UPDATE kb_documents SET chunking_status = NULL, chunk_count = 0 WHERE is_active = 1"
-                        )
-                        cursor.execute("DELETE FROM kb_chunks_fts")
-                        conn.commit()
-
-                        cursor.execute(
-                            "SELECT COUNT(*) as count FROM kb_documents WHERE is_active = 1"
-                        )
-                        total_docs = cursor.fetchone()["count"]
-
-                        response = CLIResponse(
-                            success=True,
-                            data={
-                                "cleared_documents": total_docs,
-                                "reindexing_triggered": True,
-                            },
-                            message=f"Full index rebuild initiated for {total_docs} documents",
-                        )
-                    else:
-                        # Only rebuild failed/pending documents
-                        cursor.execute("""
-                            UPDATE kb_documents SET chunking_status = NULL
-                            WHERE is_active = 1 AND chunking_status IN ('failed', 'processing')
-                        """)
-                        affected = cursor.rowcount
-                        conn.commit()
-
-                        response = CLIResponse(
-                            success=True,
-                            data={
-                                "reset_documents": affected,
-                                "reindexing_triggered": True,
-                            },
-                            message=f"Index rebuild initiated for {affected} failed documents",
-                        )
+                # All active documents with --force, otherwise the pending and
+                # failed ones; index_document replaces each document's chunks.
+                return self.bulk_reindex(force=force)
 
             response.set_duration(start_time)
             return response
@@ -1058,27 +981,22 @@ class KBAdmin:
 
                 optimization_results = []
 
-                # Rebuild FTS indexes
                 cursor.execute(
                     "INSERT INTO kb_chunks_fts(kb_chunks_fts) VALUES('rebuild')"
                 )
-                optimization_results.append("FTS index rebuilt")
+                optimization_results.append("Knowledge-base FTS index rebuilt")
 
-                # Analyze and optimize tables
-                for table in ["kb_documents", "kb_chunks", "kb_chunks_fts"]:
-                    cursor.execute(f"ANALYZE {table}")
+                for fts in ("kb_chunks_fts", "bookstack_fts", "bookstack_chunks_fts"):
+                    cursor.execute(f"INSERT INTO {fts}({fts}) VALUES('optimize')")
+                optimization_results.append("FTS segments merged")
 
+                cursor.execute("ANALYZE")
                 optimization_results.append("Table statistics updated")
 
-                # Vacuum to reclaim space
+                # VACUUM cannot run inside a transaction
+                conn.commit()
                 cursor.execute("VACUUM")
                 optimization_results.append("Database vacuumed")
-
-                # Update SQLite optimization settings
-                cursor.execute("PRAGMA optimize")
-                optimization_results.append("SQLite optimization applied")
-
-                conn.commit()
 
                 response = CLIResponse(
                     success=True,
@@ -1117,40 +1035,6 @@ class KBAdmin:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                # Response time analysis (last 24 hours from widget_logs if available)
-                try:
-                    cursor.execute("""
-                        SELECT
-                            AVG(response_time) as avg_response,
-                            MIN(response_time) as min_response,
-                            MAX(response_time) as max_response,
-                            COUNT(*) as total_queries
-                        FROM widget_logs
-                        WHERE created_at > datetime('now', '-24 hours')
-                    """)
-                    performance = dict(cursor.fetchone())
-                except Exception:
-                    performance = {
-                        "avg_response": 0,
-                        "min_response": 0,
-                        "max_response": 0,
-                        "total_queries": 0,
-                    }
-
-                # Top search terms (if available)
-                try:
-                    cursor.execute("""
-                        SELECT message as query, COUNT(*) as frequency
-                        FROM widget_logs
-                        WHERE created_at > datetime('now', '-7 days')
-                        GROUP BY message
-                        ORDER BY frequency DESC
-                        LIMIT 10
-                    """)
-                    top_queries = [dict(row) for row in cursor.fetchall()]
-                except Exception:
-                    top_queries = []
-
                 # Storage distribution by file type
                 cursor.execute("""
                     SELECT
@@ -1168,15 +1052,8 @@ class KBAdmin:
             # Combine all stats
             comprehensive_stats = {
                 "system_overview": db_stats,
-                "performance": {
-                    "avg_response_time_ms": round(performance["avg_response"] or 0, 2),
-                    "min_response_time_ms": performance["min_response"] or 0,
-                    "max_response_time_ms": performance["max_response"] or 0,
-                    "queries_24h": performance["total_queries"] or 0,
-                },
                 "content_analysis": {
                     "file_type_distribution": file_type_stats,
-                    "top_search_queries": top_queries,
                 },
                 "health_indicators": self._calculate_health_indicators(db_stats),
             }
@@ -1192,106 +1069,6 @@ class KBAdmin:
         except Exception as e:
             response = CLIResponse(
                 success=False, message="Failed to generate statistics", errors=[str(e)]
-            )
-            response.set_duration(start_time)
-            return response
-
-    def stats_usage(self, days: int = 30) -> CLIResponse:
-        """Get usage statistics for specified time period"""
-        start_time = time.time()
-
-        try:
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-
-                # Usage metrics
-                usage_stats = {}
-
-                # Daily query counts
-                try:
-                    cursor.execute(f"""
-                        SELECT
-                            date(created_at) as query_date,
-                            COUNT(*) as query_count,
-                            COUNT(DISTINCT session_id) as unique_sessions
-                        FROM widget_logs
-                        WHERE created_at > datetime('now', '-{days} days')
-                        GROUP BY date(created_at)
-                        ORDER BY query_date DESC
-                        LIMIT 30
-                    """)
-                    daily_usage = [dict(row) for row in cursor.fetchall()]
-                    usage_stats["daily_usage"] = daily_usage
-                except Exception:
-                    usage_stats["daily_usage"] = []
-
-                # Session statistics
-                try:
-                    cursor.execute(f"""
-                        SELECT
-                            session_id,
-                            COUNT(*) as messages_per_session,
-                            MIN(created_at) as session_start,
-                            MAX(created_at) as session_end
-                        FROM widget_logs
-                        WHERE created_at > datetime('now', '-{days} days')
-                        GROUP BY session_id
-                        ORDER BY messages_per_session DESC
-                        LIMIT 10
-                    """)
-                    session_stats = [dict(row) for row in cursor.fetchall()]
-
-                    if session_stats:
-                        avg_messages = sum(
-                            s["messages_per_session"] for s in session_stats
-                        ) / len(session_stats)
-                        usage_stats["session_analysis"] = {
-                            "total_sessions": len(session_stats),
-                            "avg_messages_per_session": round(avg_messages, 2),
-                            "top_sessions": session_stats[:5],
-                        }
-                    else:
-                        usage_stats["session_analysis"] = {
-                            "total_sessions": 0,
-                            "avg_messages_per_session": 0,
-                        }
-                except Exception:
-                    usage_stats["session_analysis"] = {
-                        "total_sessions": 0,
-                        "avg_messages_per_session": 0,
-                    }
-
-                # Document access patterns
-                cursor.execute(f"""
-                    SELECT
-                        kb_documents.title,
-                        kb_documents.file_type,
-                        COUNT(*) as access_count
-                    FROM widget_logs
-                    LEFT JOIN kb_chunks ON widget_logs.question LIKE '%' || kb_chunks.chunk_text || '%'
-                    LEFT JOIN kb_documents ON kb_chunks.doc_id = kb_documents.id
-                    WHERE widget_logs.created_at > datetime('now', '-{days} days')
-                      AND kb_documents.id IS NOT NULL
-                    GROUP BY kb_documents.id
-                    ORDER BY access_count DESC
-                    LIMIT 10
-                """)
-                document_access = [dict(row) for row in cursor.fetchall()]
-                usage_stats["document_popularity"] = document_access
-
-            response = CLIResponse(
-                success=True,
-                data=usage_stats,
-                message=f"Usage statistics for last {days} days",
-            )
-            response.set_duration(start_time)
-            return response
-
-        except Exception as e:
-            response = CLIResponse(
-                success=False,
-                message="Failed to retrieve usage statistics",
-                errors=[str(e)],
             )
             response.set_duration(start_time)
             return response
@@ -1316,30 +1093,17 @@ class KBAdmin:
                 cursor.execute("SELECT COUNT(*) as total_chunks FROM kb_chunks")
                 total_chunks = cursor.fetchone()["total_chunks"]
 
-                cursor.execute("SELECT COUNT(*) as fts_entries FROM kb_chunks_fts")
+                cursor.execute(
+                    "SELECT COUNT(*) as fts_entries FROM kb_chunks_fts_docsize"
+                )
                 fts_entries = cursor.fetchone()["fts_entries"]
-
-                # Query performance (if available)
-                try:
-                    cursor.execute("""
-                        SELECT
-                            AVG(response_time) as avg_response,
-                            PERCENTILE(response_time, 50) as median_response,
-                            PERCENTILE(response_time, 95) as p95_response,
-                            COUNT(*) as sample_size
-                        FROM widget_logs
-                        WHERE created_at > datetime('now', '-24 hours') AND response_time IS NOT NULL
-                    """)
-                    query_perf = dict(cursor.fetchone() or {})
-                except Exception:
-                    query_perf = {}
 
                 # Chunking efficiency
                 cursor.execute("""
                     SELECT
-                        AVG(LENGTH(content)) as avg_chunk_size,
-                        MIN(LENGTH(content)) as min_chunk_size,
-                        MAX(LENGTH(content)) as max_chunk_size,
+                        AVG(LENGTH(chunk_text)) as avg_chunk_size,
+                        MIN(LENGTH(chunk_text)) as min_chunk_size,
+                        MAX(LENGTH(chunk_text)) as max_chunk_size,
                         COUNT(*) as total_chunks
                     FROM kb_chunks
                 """)
@@ -1355,7 +1119,6 @@ class KBAdmin:
                         "fts_entries": fts_entries,
                         "index_ratio": round(fts_entries / max(total_chunks, 1), 2),
                     },
-                    "query_performance": query_perf,
                     "chunking_metrics": chunk_stats,
                 }
 
@@ -1475,49 +1238,32 @@ class KBAdmin:
                     f"Table integrity check failed: {str(e)}"
                 )
 
-            # Index health
+            # Index health: FTS5 compares the index with kb_chunks itself
             try:
                 with get_db_connection() as conn:
-                    cursor = conn.cursor()
-
-                    cursor.execute("SELECT COUNT(*) as chunks FROM kb_chunks")
-                    chunk_count = cursor.fetchone()["chunks"]
-
-                    cursor.execute("SELECT COUNT(*) as fts_entries FROM kb_chunks_fts")
-                    fts_count = cursor.fetchone()["fts_entries"]
-
-                    if chunk_count == 0:
-                        health_results["index_health"] = True  # No chunks yet is OK
-                    elif abs(chunk_count - fts_count) / chunk_count < 0.1:  # Within 10%
-                        health_results["index_health"] = True
-                    else:
-                        health_results["issues_found"].append(
-                            f"Index mismatch: {chunk_count} chunks vs {fts_count} FTS entries"
-                        )
-                        health_results["recommendations"].append("Run index rebuild")
-
+                    conn.execute(
+                        "INSERT INTO kb_chunks_fts(kb_chunks_fts, rank) "
+                        "VALUES('integrity-check', 1)"
+                    )
+                    health_results["index_health"] = True
             except Exception as e:
-                health_results["issues_found"].append(
-                    f"Index health check failed: {str(e)}"
+                health_results["issues_found"].append(f"FTS index inconsistent: {e}")
+                health_results["recommendations"].append(
+                    "Run: kb_admin.py index optimize (rebuilds the FTS index)"
                 )
 
             # Storage access
-            try:
-                # Try to access storage directory
-                storage_path = Path("data")  # Adjust based on actual storage path
-                if storage_path.exists() and storage_path.is_dir():
-                    health_results["storage_access"] = True
-                else:
-                    health_results["issues_found"].append(
-                        "Storage directory not accessible"
-                    )
-                    health_results["recommendations"].append(
-                        "Check storage directory permissions"
-                    )
-
-            except Exception as e:
+            storage_path = Path(StorageService.STORAGE_BASE_PATH)
+            if os.access(storage_path.parent, os.W_OK) and (
+                not storage_path.exists() or os.access(storage_path, os.W_OK)
+            ):
+                health_results["storage_access"] = True
+            else:
                 health_results["issues_found"].append(
-                    f"Storage access check failed: {str(e)}"
+                    f"Storage directory not writable: {storage_path}"
+                )
+                health_results["recommendations"].append(
+                    "Check storage directory permissions"
                 )
 
             # Service dependencies (basic check)
@@ -1685,7 +1431,14 @@ Examples:
     # bulk cleanup
     bulk_cleanup = bulk_subparsers.add_parser("cleanup", help="Clean up orphaned data")
     bulk_cleanup.add_argument(
-        "--dry-run", action="store_true", help="Show what would be deleted"
+        "--apply",
+        action="store_true",
+        help="Delete what was found (default: only report it)",
+    )
+    bulk_cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only report what would be deleted (the default; kept for scripts)",
     )
     bulk_cleanup.add_argument(
         "--older-than", type=int, default=30, help="Delete items older than N days"
@@ -1724,10 +1477,6 @@ Examples:
 
     # stats overview
     stats_subparsers.add_parser("overview", help="System overview")
-
-    # stats usage
-    stats_usage = stats_subparsers.add_parser("usage", help="Usage statistics")
-    stats_usage.add_argument("--days", type=int, default=30, help="Days to analyze")
 
     # stats performance
     stats_subparsers.add_parser("performance", help="Performance metrics")
@@ -1801,7 +1550,8 @@ Examples:
                 )
             elif args.bulk_action == "cleanup":
                 response = admin.bulk_cleanup(
-                    dry_run=args.dry_run, older_than_days=args.older_than
+                    dry_run=args.dry_run or not args.apply,
+                    older_than_days=args.older_than,
                 )
             else:
                 parser.error(f"Unknown bulk action: {args.bulk_action}")
@@ -1821,8 +1571,6 @@ Examples:
         elif args.command == "stats":
             if args.stats_action == "overview":
                 response = admin.stats_overview()
-            elif args.stats_action == "usage":
-                response = admin.stats_usage(days=args.days)
             elif args.stats_action == "performance":
                 response = admin.stats_performance()
             else:

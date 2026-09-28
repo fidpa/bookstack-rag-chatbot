@@ -42,7 +42,7 @@ class HybridSearchService:
         # Query analysieren
         analysis = QueryProcessor.analyze_query(query)
         logger.info(
-            f"Query-Analyse: Intent={analysis.intent.value}, "
+            f"Query analysis: Intent={analysis.intent.value}, "
             f"Keywords={analysis.keywords}, Entities={analysis.entities}"
         )
 
@@ -82,10 +82,10 @@ class HybridSearchService:
             results[SearchStrategy.TITLE_TAG] = title_results
 
         # 2. Exact Phrase Search (wenn sinnvoll)
+        # The keywords in question order, e.g. "vacation policy"
         if len(analysis.keywords) >= 2:
-            phrase = " ".join(analysis.must_have_terms[:3])
             exact_results = SearchImplementations.search_exact_phrase(
-                phrase, active_only
+                analysis.keywords[:3], active_only
             )
             if exact_results:
                 results[SearchStrategy.EXACT_PHRASE] = exact_results
@@ -121,7 +121,7 @@ class HybridSearchService:
         if chunk_results:
             results[SearchStrategy.CHUNK_BASED] = chunk_results
 
-        # 7. BookStack Content Search (NEW!)
+        # 7. BookStack items, merged into the keyword results
         if analysis.keywords:
             bookstack_content_results = SearchImplementations.search_bookstack_content(
                 analysis.keywords + analysis.entities, active_only
@@ -132,7 +132,7 @@ class HybridSearchService:
                     + bookstack_content_results
                 )
 
-        # 8. BookStack Chunks Search (NEW!)
+        # 8. BookStack chunks, merged into the chunk results
         if analysis.keywords:
             bookstack_chunk_results = SearchImplementations.search_bookstack_chunks(
                 analysis.keywords + analysis.entities, active_only

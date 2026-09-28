@@ -8,22 +8,22 @@ keep it in sync.
 
 The script is **not in the container image**. `docker/docker-compose.yml` builds the
 chatbot with `context: ../chatbot`, so only the `chatbot/` directory lands in `/app`;
-`scripts/` stays on the host. Run it from the repository root:
+`scripts/` stays on the host. It needs the chatbot's dependencies and runs from
+anywhere:
 
 ```bash
-PYTHONPATH=chatbot python3 scripts/kb_admin.py <command> <action> [options]
+pip install -r chatbot/requirements.txt
+DATABASE_PATH=/path/to/chatbot.db python3 scripts/kb_admin.py <command> <action> [options]
 ```
 
-`PYTHONPATH` is required. The script adds the repository root to `sys.path`, then
-imports `documents.knowledge_base…` and `utils.database`, which live one level down
-under `chatbot/`. Without it the script exits with `Import error: No module named
-'documents'`.
+The script puts `chatbot/` on its import path itself. Before v0.3.0 it added the
+repository root instead and failed with `Import error: No module named 'documents'`
+unless `PYTHONPATH=chatbot` was set.
 
-It also needs the database. `DATABASE_PATH` points at `/app/data/chatbot.db` in the
-container, which is the `chatbot_data` volume; set `DATABASE_PATH` to a host-readable
-copy or path before running, or the first thing you see is a failed validation.
-Startup checks that `kb_documents`, `kb_chunks` and `kb_tags` exist and exits `1`
-otherwise.
+`DATABASE_PATH` must point at the database the chatbot uses. In the container that is
+`/app/data/chatbot.db` on the `chatbot_data` volume; bind-mount the volume or work on
+a copy. Uploaded files are stored in `knowledge_base/` next to the database file. On
+first use the CLI creates any missing tables, so it also works on a fresh stack.
 
 ## Command Tree
 
@@ -32,7 +32,7 @@ kb_admin [--version] [--format {table,json}]
 ├── documents  list | upload | show | update | delete
 ├── bulk       upload | reindex | cleanup
 ├── index      status | rebuild | optimize
-├── stats      overview | usage | performance
+├── stats      overview | performance
 └── maintenance health-check
 ```
 
@@ -75,9 +75,13 @@ usage: kb_admin documents delete [-h] --id ID [--confirm]
 `list` prints has the columns ID, Title, Type, Size, Status, Uploaded; tags are not in
 it, use `documents show --id`.
 
+`upload` stores the file and indexes it in one go: the document is searchable when
+the command returns, and a failed text extraction is reported as a failed upload
+(the row stays, with `chunking_status = 'failed'`, for `bulk reindex` to retry).
+
 Accepted extensions come from `ALLOWED_EXTENSIONS` in
-`chatbot/documents/knowledge_base/validators.py`: `pdf`, `docx`, `doc`, `txt`, `md`,
-`csv`, `xlsx`, `xls`. `MAX_FILE_SIZE` in the same file caps an upload at 20 MB.
+`chatbot/documents/knowledge_base/validators.py`: `.pdf`, `.docx`, `.txt`, `.md`,
+`.markdown`, the types text can be extracted from.
 
 ## `bulk`
 
@@ -102,16 +106,26 @@ usage: kb_admin bulk reindex [-h] [--force] [--batch-size BATCH_SIZE]
   --batch-size BATCH_SIZE
                         Batch size
 
-usage: kb_admin bulk cleanup [-h] [--dry-run] [--older-than OLDER_THAN]
+usage: kb_admin bulk cleanup [-h] [--apply] [--dry-run] [--older-than OLDER_THAN]
 
-  --dry-run             Show what would be deleted
+  --apply               Delete what was found (default: only report it)
+  --dry-run             Only report what would be deleted (the default; kept for scripts)
   --older-than OLDER_THAN
                         Delete items older than N days
 ```
 
-`--extensions` defaults to `pdf,docx,txt,md`, which is narrower than what the validator
-accepts; name the others explicitly if you want them. `bulk cleanup --older-than`
-defaults to 30 days, so run `--dry-run` first.
+`--extensions` defaults to `pdf,docx,txt,md`. `--skip-existing` compares filename and
+SHA-256 content hash against active documents.
+
+`bulk reindex` without `--force` picks up documents that are pending, failed or were
+interrupted; with `--force` it reindexes every active document.
+
+`bulk cleanup` reports by default and deletes only with `--apply`. It finds chunks whose
+document row no longer exists, and deactivated documents older than `--older-than`
+days (default 30); the latter are deleted with their file, chunks and tags. Chunks of
+a merely deactivated document are left alone, so reactivating it needs no reindex.
+Before v0.3.0 the command deleted by default, and removed the chunks of deactivated
+documents.
 
 ## `index`
 
@@ -125,38 +139,37 @@ usage: kb_admin index rebuild [-h] [--document-id DOCUMENT_ID] [--force]
   --force               Force full rebuild
 ```
 
+`rebuild --document-id` reindexes one document; without it, `rebuild` does what
+`bulk reindex` does (pending and failed documents, or all with `--force`).
+`optimize` rebuilds the knowledge-base FTS index from `kb_chunks`, merges the segments
+of all three FTS indexes, updates the planner statistics and vacuums the file.
 `status` and `optimize` take no options.
 
 ## `stats`
 
 ```
-usage: kb_admin stats [-h] {overview,usage,performance} ...
-
-usage: kb_admin stats usage [-h] [--days DAYS]
-
-  --days DAYS  Days to analyze
+usage: kb_admin stats [-h] {overview,performance} ...
 ```
 
-`--days` defaults to 30. `overview` and `performance` take no options.
+Neither takes options. `stats usage` and the query statistics in `overview` read a
+chat log table that nothing ever wrote to; they were removed in v0.3.0, along with the
+chat logging itself.
 
 ## `maintenance health-check`
 
 Five checks: database connectivity, table integrity (`kb_documents`, `kb_chunks`,
-`kb_chunks_fts`), index health (chunk count against FTS entry count), storage access,
-and importability of the two service modules. The output is a score
-(`checks_passed / 5`) as a percentage, plus the issues and recommendations collected
-along the way.
-
-The exit status is `0` regardless of the score; read the output rather than `$?`. The
-storage check resolves the relative path `data`, so it only passes when the CLI runs
-from a directory that has one.
+`kb_chunks_fts`), index health (FTS5's own `integrity-check` of `kb_chunks_fts`
+against `kb_chunks`), write access to the upload directory, and importability of the
+two service modules. The output is a score (`checks_passed / 5`) as a percentage, plus
+the issues and recommendations collected along the way. The exit status is `1` when
+any check found an issue.
 
 ## Common Workflows
 
 ### Import a directory of PDFs
 
 ```bash
-PYTHONPATH=chatbot python3 scripts/kb_admin.py bulk upload \
+python3 scripts/kb_admin.py bulk upload \
   --directory /path/to/docs --extensions pdf --tags bulk-import
 ```
 
@@ -165,9 +178,9 @@ PYTHONPATH=chatbot python3 scripts/kb_admin.py bulk upload \
 IDs are auto-increment integers (`--id` is `type=int`), not UUIDs.
 
 ```bash
-PYTHONPATH=chatbot python3 scripts/kb_admin.py --format json documents list --limit 200
-PYTHONPATH=chatbot python3 scripts/kb_admin.py documents show --id 42 --chunks
-PYTHONPATH=chatbot python3 scripts/kb_admin.py documents delete --id 42 --confirm
+python3 scripts/kb_admin.py --format json documents list --limit 200
+python3 scripts/kb_admin.py documents show --id 42 --chunks
+python3 scripts/kb_admin.py documents delete --id 42 --confirm
 ```
 
 `delete` without `--confirm` does not delete.
@@ -175,9 +188,9 @@ PYTHONPATH=chatbot python3 scripts/kb_admin.py documents delete --id 42 --confir
 ### Check integrity after a restore
 
 ```bash
-PYTHONPATH=chatbot python3 scripts/kb_admin.py maintenance health-check
-PYTHONPATH=chatbot python3 scripts/kb_admin.py index status
-PYTHONPATH=chatbot python3 scripts/kb_admin.py stats overview
+python3 scripts/kb_admin.py maintenance health-check
+python3 scripts/kb_admin.py index status
+python3 scripts/kb_admin.py stats overview
 ```
 
 ## Notes
@@ -188,5 +201,4 @@ PYTHONPATH=chatbot python3 scripts/kb_admin.py stats overview
 - There is no `search` and no `debug` subcommand, and no `--verbose` flag. Diagnostic
   output goes to stdout; `--format json` gives you the machine-readable form of the
   same response object.
-- The CLI reports its own version (`kb_admin --version`), which tracks `CLI_VERSION` in
-  the script and is bumped with the release.
+- `kb_admin --version` reports the release, read from `chatbot/version.py`.

@@ -1,12 +1,12 @@
 """
-Indexing Service für Knowledge Base
-Verwaltet die Volltext-Indexierung der Dokumente
+Indexing Service for the knowledge base
+Extracts text from uploaded documents and stores it as searchable chunks.
 """
 
 import os
 import logging
 from datetime import datetime
-from typing import Tuple, List, Dict
+from typing import Tuple
 
 from utils.database import get_db_connection
 from ..models import KnowledgeDocument
@@ -56,15 +56,12 @@ def _extract_text_from_file(file_path: str, file_type: str) -> str:
 
 
 class IndexingService:
-    """Service für die Volltext-Indexierung von Wissensbasis-Dokumenten"""
-
-    # Maximale Chunk-Größe für Indexierung (10KB)
-    MAX_CHUNK_SIZE = 10240
+    """Full-text indexing of uploaded knowledge-base documents"""
 
     @classmethod
     def extract_text_from_document(cls, doc: KnowledgeDocument) -> Tuple[bool, str]:
         """
-        Extrahiert Text aus einem Dokument.
+        Extract the plain text of a document.
 
         Returns:
             (success, text_content)
@@ -92,13 +89,15 @@ class IndexingService:
             return False, error_msg
 
     @classmethod
-    def index_document(cls, doc_id: int, use_chunking: bool = True) -> Tuple[bool, str]:
+    def index_document(cls, doc_id: int) -> Tuple[bool, str]:
         """
-        Indexiert ein einzelnes Dokument für die Volltext-Suche
+        Extract, chunk and index one uploaded document.
+
+        On failure the document's chunking_status is set to 'failed', which is
+        what `kb_admin.py bulk reindex` selects.
 
         Args:
-            doc_id: ID des zu indexierenden Dokuments
-            use_chunking: Ob das neue Chunking-System verwendet werden soll
+            doc_id: kb_documents id
 
         Returns:
             (success, message)
@@ -112,32 +111,38 @@ class IndexingService:
                 row = cursor.fetchone()
 
                 if not row:
-                    return False, "Dokument nicht gefunden"
+                    return False, "Document not found"
 
                 doc = KnowledgeDocument.from_db_row(dict(row))
 
-                # Text extrahieren
-                success, text_content = cls.extract_text_from_document(doc)
-
-                if not success:
-                    logger.error(
-                        f"Text extraction failed for doc {doc_id}: {text_content}"
-                    )
-                    return False, f"Text-Extraktion fehlgeschlagen: {text_content}"
-
-                if use_chunking:
-                    return cls._index_with_chunking(doc_id, text_content, doc)
-                else:
-                    return cls._index_legacy(doc_id, text_content, doc)
+            success, text_content = cls.extract_text_from_document(doc)
+            if success:
+                success, message = cls._index_with_chunking(doc_id, text_content)
+            else:
+                message = f"Text extraction failed: {text_content}"
 
         except Exception as e:
-            logger.error(f"Error indexing document {doc_id}: {e}")
-            return False, f"Indexing failed: {e}"
+            success, message = False, f"Indexing failed: {e}"
+
+        if not success:
+            logger.error(f"Indexing document {doc_id} failed: {message}")
+            cls._mark_failed(doc_id)
+        return success, message
 
     @classmethod
-    def _index_with_chunking(
-        cls, doc_id: int, text_content: str, doc: KnowledgeDocument
-    ) -> Tuple[bool, str]:
+    def _mark_failed(cls, doc_id: int):
+        try:
+            with get_db_connection() as conn:
+                conn.execute(
+                    "UPDATE kb_documents SET chunking_status = 'failed' WHERE id = ?",
+                    (doc_id,),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Could not mark document {doc_id} as failed: {e}")
+
+    @classmethod
+    def _index_with_chunking(cls, doc_id: int, text_content: str) -> Tuple[bool, str]:
         """Index document using the chunking pipeline."""
         try:
             with get_db_connection() as conn:
@@ -170,22 +175,6 @@ class IndexingService:
                         ),
                     )
 
-                stats = chunking_service.get_chunk_statistics(chunks)
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO kb_chunk_stats
-                    (doc_id, total_chunks, avg_chunk_size, min_chunk_size, max_chunk_size)
-                    VALUES (?, ?, ?, ?, ?)
-                """,
-                    (
-                        doc_id,
-                        stats["total_chunks"],
-                        int(stats["avg_words_per_chunk"]),
-                        stats["min_words"],
-                        stats["max_words"],
-                    ),
-                )
-
                 cursor.execute(
                     """
                     UPDATE kb_documents
@@ -197,20 +186,6 @@ class IndexingService:
                     (datetime.now().isoformat(), len(chunks), doc_id),
                 )
 
-                # also update legacy FTS index for backwards compatibility
-                cursor.execute("DELETE FROM kb_search_fts WHERE doc_id = ?", (doc_id,))
-                cursor.execute(
-                    """
-                    INSERT INTO kb_search_fts (doc_id, title, content)
-                    VALUES (?, ?, ?)
-                """,
-                    (
-                        doc_id,
-                        doc.title or doc.original_filename,
-                        text_content[: cls.MAX_CHUNK_SIZE],
-                    ),
-                )
-
                 conn.commit()
 
                 logger.info(f"Document {doc_id} indexed with {len(chunks)} chunks")
@@ -219,116 +194,3 @@ class IndexingService:
         except Exception as e:
             logger.error(f"Chunk indexing error: {e}", exc_info=True)
             return False, f"Chunk indexing failed: {e}"
-
-    @classmethod
-    def _index_legacy(
-        cls, doc_id: int, text_content: str, doc: KnowledgeDocument
-    ) -> Tuple[bool, str]:
-        """Legacy indexing without chunking (single FTS5 row per document)."""
-        try:
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-
-                cursor.execute("DELETE FROM kb_search_fts WHERE doc_id = ?", (doc_id,))
-
-                slices = [
-                    text_content[i : i + cls.MAX_CHUNK_SIZE]
-                    for i in range(0, len(text_content), cls.MAX_CHUNK_SIZE)
-                ]
-
-                for slice_text in slices:
-                    cursor.execute(
-                        """
-                        INSERT INTO kb_search_fts (doc_id, title, content)
-                        VALUES (?, ?, ?)
-                    """,
-                        (doc_id, doc.title or doc.original_filename, slice_text),
-                    )
-
-                cursor.execute(
-                    """
-                    UPDATE kb_documents
-                    SET last_indexed = ?,
-                        chunking_status = 'legacy'
-                    WHERE id = ?
-                """,
-                    (datetime.now().isoformat(), doc_id),
-                )
-
-                conn.commit()
-
-                logger.info(f"Document {doc_id} indexed (legacy)")
-                return True, "Document indexed"
-
-        except Exception as e:
-            logger.error(f"Legacy indexing error: {e}")
-            return False, f"Indexing failed: {e}"
-
-    @classmethod
-    def index_all_documents(cls, progress_callback=None) -> Tuple[int, int]:
-        """
-        Re-index all active documents.
-
-        Args:
-            progress_callback: Optional callback(current, total, doc_name)
-
-        Returns:
-            (successful_count, failed_count)
-        """
-        successful = 0
-        failed = 0
-
-        try:
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT id, original_filename, title
-                    FROM kb_documents
-                    WHERE is_active = 1
-                """)
-
-                documents = cursor.fetchall()
-                total = len(documents)
-
-            for idx, doc in enumerate(documents):
-                doc_id = doc["id"]
-                doc_name = doc["title"] or doc["original_filename"]
-
-                if progress_callback:
-                    progress_callback(idx + 1, total, doc_name)
-
-                success, _ = cls.index_document(doc_id)
-                if success:
-                    successful += 1
-                else:
-                    failed += 1
-
-            logger.info(f"Re-index complete: {successful} ok, {failed} failed")
-
-        except Exception as e:
-            logger.error(f"Full re-index error: {e}")
-
-        return successful, failed
-
-    @classmethod
-    def extract_keywords(cls, text: str, max_keywords: int = 10) -> List[str]:
-        """Extract the most significant keywords from text using TF-IDF."""
-        from .keyword_extraction import KeywordExtractor
-
-        extractor = KeywordExtractor()
-        keywords_with_scores = extractor.extract_keywords(
-            text, max_keywords=max_keywords, include_ngrams=True
-        )
-        keywords = [keyword for keyword, score in keywords_with_scores]
-        logger.debug(f"Extracted {len(keywords)} keywords via TF-IDF")
-        return keywords
-
-    @classmethod
-    def extract_document_entities(cls, text: str) -> Dict[str, List[str]]:
-        """Extract named entities from text."""
-        from .keyword_extraction import KeywordExtractor
-
-        extractor = KeywordExtractor()
-        entities = extractor.extract_entities(text)
-        logger.debug(f"Extracted {sum(len(v) for v in entities.values())} entities")
-        return entities

@@ -17,8 +17,8 @@ tenacity>=8.0.0         # Retry logic for API calls
 requests>=2.31.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-pytz>=2024.1            # Timezone handling in logging
-PyYAML>=6.0             # YAML parsing in KB services
+tzdata>=2024.1          # IANA zones for zoneinfo (TZ) on slim images
+PyYAML>=6.0             # Front-matter parsing of uploaded Markdown
 
 # ── Document processing (knowledge-base upload) ───────────────────────────────
 pypdfium2>=4.30.0       # PDF extraction (primary)

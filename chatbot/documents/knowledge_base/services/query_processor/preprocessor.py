@@ -1,184 +1,96 @@
 """
 Query Preprocessor
-Handles query preprocessing for FTS5 (Medical-Aware seit 2025-10-20)
+Turns free text into FTS5 MATCH expressions that cannot be misread as syntax.
+
+Every term is emitted as a quoted string. Bare words are FTS5 syntax: a
+question containing an upper-case NOT, AND, OR or NEAR, or a hyphen, would
+otherwise become an operator and fail with "fts5: syntax error", which the
+callers log and turn into an empty result.
 """
 
 import logging
+import re
+from typing import Iterable, List
+
+from .constants import STOPWORDS
 
 logger = logging.getLogger(__name__)
+
+_TOKEN = re.compile(r"\w+", re.UNICODE)
+
+# More terms than this only slow the query down without changing the top hits
+MAX_TERMS = 15
+
+
+def tokenize(text: str) -> List[str]:
+    """Word characters only (letters of any script, digits, underscore)."""
+    return _TOKEN.findall(text or "")
+
+
+def quote(term: str) -> str:
+    """One FTS5 string. Several words inside it form a phrase."""
+    return '"' + " ".join(tokenize(term)) + '"'
+
+
+def search_terms(text: str) -> List[str]:
+    """
+    Distinct search terms of a query, stopwords and one- or two-letter words removed.
+
+    If nothing survives the filter (a query like "C vs C#"), the short tokens
+    are kept instead, so the query still searches for something.
+    """
+    tokens = tokenize(text)
+    terms = [t for t in tokens if len(t) >= 3 and t.lower() not in STOPWORDS]
+    if not terms:
+        terms = [t for t in tokens if t.lower() not in STOPWORDS] or tokens
+    return list(dict.fromkeys(terms))[:MAX_TERMS]
+
+
+def match_any(terms: Iterable[str]) -> str:
+    """FTS5 expression matching any of the terms ('' if there are none)."""
+    quoted = [quote(t) for t in terms if tokenize(t)]
+    return " OR ".join(dict.fromkeys(quoted))
+
+
+def match_all(terms: Iterable[str]) -> str:
+    """FTS5 expression matching all of the terms ('' if there are none)."""
+    quoted = [quote(t) for t in terms if tokenize(t)]
+    return " AND ".join(dict.fromkeys(quoted))
+
+
+def match_phrase(terms: Iterable[str]) -> str:
+    """FTS5 expression matching the terms as one consecutive phrase."""
+    words = [w for t in terms for w in tokenize(t)]
+    return quote(" ".join(words)) if words else ""
+
+
+def match_near(first: str, second: str, distance: int) -> str:
+    """FTS5 expression matching both terms within `distance` tokens."""
+    if not tokenize(first) or not tokenize(second):
+        return ""
+    return f"NEAR({quote(first)} {quote(second)}, {int(distance)})"
+
+
+def match_prefix(terms: Iterable[str]) -> str:
+    """FTS5 expression matching any term as a word prefix."""
+    quoted = [f"{quote(t)}*" for t in terms if tokenize(t)]
+    return " OR ".join(quoted)
 
 
 class QueryPreprocessor:
     """Handles query preprocessing for search engines"""
 
     @classmethod
-    def preprocess_for_fts5(cls, query: str, enable_medical_boost: bool = True) -> str:
+    def preprocess_for_fts5(cls, query: str) -> str:
         """
-        Bereitet Query für FTS5 vor (mit OR-Semantik + Medical Boost)
-
-        WICHTIG: SQLite FTS5 ist SEHR sensibel bei Sonderzeichen!
-        Wir behalten NUR Buchstaben, Zahlen und Leerzeichen.
-        WICHTIG: FTS5 verwendet AND-Semantik standardmäßig, aber wir brauchen OR!
-
-        ICD-aware preprocessing added 2025-10-20:
-        - Extracts ICD-10 codes (e.g. M05.3, S42.0-) before tokenisation
-        - Prepends ICD codes for highest-priority ranking
-        - Appends synonyms from MedicalSynonymExpander.MEDICAL_SYNONYMS (empty by default)
-
-        Args:
-            query: Raw user query
-            enable_medical_boost: Enable ICD-code and synonym boost (default: True)
+        Build an OR query of the query's search terms.
 
         Returns:
-            FTS5-compatible OR-linked query string
+            FTS5 MATCH expression, or '' if the query holds no searchable word.
+            Callers must skip the search on ''; MATCH '' is a syntax error.
 
         Examples:
-            "What changed in January 2026" → "What OR changed OR January OR 2026"
-            "M05.3 Arthritis"             → "M053 OR M05 OR Arthritis"
+            "What changed in January 2026?" -> '"What" OR "changed" OR "January" OR "2026"'
+            "Why is it NOT working?"        -> '"Why" OR "NOT" OR "working"'
         """
-        import re
-
-        # Phase 1: Medical Term Extraction (VOR Preprocessing!)
-        icd_codes = []
-        medical_synonyms = []
-
-        if enable_medical_boost:
-            try:
-                from .medical_extractors import ICDCodeExtractor, MedicalSynonymExpander
-
-                # Extrahiere ICD-Codes
-                icd_codes = ICDCodeExtractor.extract_icd_codes(query)
-
-                # Extrahiere medizinische Synonyme
-                medical_synonyms = MedicalSynonymExpander.expand_query_with_synonyms(
-                    query
-                )
-
-                logger.info(
-                    f"Medical Boost: ICD={icd_codes}, Synonyms={medical_synonyms[:3]}"
-                )
-
-            except ImportError:
-                logger.warning(
-                    "medical_extractors not available, skipping medical boost"
-                )
-
-        # Phase 2: Standard FTS5 Preprocessing
-        # ROBUSTER ANSATZ: Behalte nur alphanumerische Zeichen + Leerzeichen
-        # Alle Sonderzeichen werden zu Leerzeichen (. ? ! , : ; etc.)
-        # Unicode-Safe für deutsche Umlaute (äöüÄÖÜß)
-        escaped_query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
-
-        # Mehrfache Leerzeichen durch einzelnes ersetzen
-        escaped_query = re.sub(r"\s+", " ", escaped_query).strip()
-
-        # Fallback für leeren String
-        if not escaped_query:
-            return "dokument"  # Suche nach irgendetwas
-
-        # OR-Semantik: Verbinde Wörter mit OR
-        # Filtere Stopwords und kurze Wörter (< 3 Zeichen)
-        stopwords = {
-            "und",
-            "der",
-            "die",
-            "das",
-            "ist",
-            "in",
-            "zu",
-            "den",
-            "dem",
-            "von",
-            "für",
-            "auf",
-            "mit",
-            "als",
-            "bei",
-            "es",
-            "an",
-            "um",
-            "am",
-            "im",
-            "the",
-            "a",
-            "an",
-            "and",
-            "or",
-            "but",
-            "in",
-            "on",
-            "at",
-            "to",
-            "for",
-        }
-
-        words = [
-            w
-            for w in escaped_query.split()
-            if len(w) >= 3 and w.lower() not in stopwords
-        ]
-
-        # Limitiere auf max. 15 Keywords (Performance)
-        keywords = words[:15]
-
-        # Verbinde mit OR
-        or_query = " OR ".join(keywords)
-        base_query = or_query if or_query else escaped_query
-
-        # Phase 3: Medical Boost (ICD-Codes + Synonyme ZUERST)
-        if enable_medical_boost and (icd_codes or medical_synonyms):
-            boosted_terms = []
-
-            # ICD-Codes (höchste Priorität)
-            # WICHTIG: FTS5 tokenisiert "M31.3" als "M31" + "3" (zwei Tokens!)
-            # Daher suchen wir nach der BASIS (M31), NICHT "M313"!
-            for code in icd_codes:
-                if "." in code:
-                    # M05.3 → Nutze BASIS "M05" (findet "M05.3", "M05.0", etc.)
-                    base_code = code.split(".")[0].replace("-", "")
-                    boosted_terms.append(base_code)
-
-                    # Optional: Auch ohne Punkt (für Fälle wo Code ohne Punkt geschrieben wurde)
-                    # M05.3 → M053 (niedrigere Priorität)
-                    fts5_code_no_dot = code.replace(".", "").replace("-", "")
-                    # Nur hinzufügen wenn anders als base_code
-                    if fts5_code_no_dot != base_code:
-                        boosted_terms.append(fts5_code_no_dot)
-
-                else:
-                    # Bereits Basis-Code (M08, S42, etc.)
-                    fts5_code = code.replace("-", "")
-                    boosted_terms.append(fts5_code)
-
-                    # Erweitere ICD-Familie wenn nötig
-                    try:
-                        from .medical_extractors import ICDCodeExtractor
-
-                        family_codes = ICDCodeExtractor.expand_icd_family(code)
-                        # Top 3 Family-Members (nur Basis-Teil)
-                        for fc in family_codes[:3]:
-                            base_fc = fc.split(".")[0].replace("-", "")
-                            boosted_terms.append(base_fc)
-                    except Exception as e:
-                        logger.debug(f"ICD-Family-Expansion failed: {e}")
-
-            # Medizinische Synonyme (mittlere Priorität, max 3)
-            for syn in medical_synonyms[:3]:
-                # Preprocess Synonym ebenfalls
-                syn_clean = re.sub(r"[^\w\s]", " ", syn, flags=re.UNICODE)
-                syn_clean = re.sub(r"\s+", " ", syn_clean).strip()
-                if syn_clean:
-                    boosted_terms.append(syn_clean)
-
-            # Deduplizierung
-            boosted_terms = list(dict.fromkeys(boosted_terms))
-
-            # Baue finale Query: BOOSTED TERMS FIRST
-            final_query = " OR ".join(boosted_terms) + " OR " + base_query
-
-            logger.info(f"Medical-Boosted Query: {len(boosted_terms)} priority terms")
-
-            return final_query
-
-        # Standard-Query (kein Medical Boost)
-        return base_query
+        return match_any(search_terms(query))

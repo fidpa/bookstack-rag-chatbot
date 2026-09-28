@@ -38,14 +38,14 @@ BookStack and its database (MariaDB) are separate by convention; we leave them a
 |---|---|---|
 | BookStack content | Pages, books, chapters | MariaDB (managed by BookStack) |
 | Chatbot index | Mirror of BookStack content as FTS5 rows | `chatbot.db` SQLite |
-| Knowledge base | Uploaded documents (`pdf`, `docx`, `doc`, `txt`, `md`, `csv`, `xlsx`, `xls`) | `chatbot.db` SQLite (`kb_*` tables) |
-| Rate-limit counters | Per-IP request timestamps | In-memory in the Flask process, lost on restart and not shared between workers |
-| Chat sessions | A widget-generated session id | The visitor's `sessionStorage`; the backend keeps no user record |
+| Knowledge base | Uploaded documents (`pdf`, `docx`, `txt`, `md`) | `chatbot.db` SQLite (`kb_*` tables), files in `knowledge_base/` next to it |
+| Rate-limit counters | Per-IP request timestamps | In-memory in the Flask process, shared by its waitress threads, lost on restart |
+| Chat sessions | The last 20 messages per conversation | In-memory in the Flask process for 30 minutes; the visitor's `sessionStorage` holds only the server-issued session id. No transcript is written anywhere |
 
 The chatbot's SQLite database has two parallel sets of tables:
 
-- `bookstack_content`, `bookstack_chunks`, `bookstack_chunks_fts`: mirrors BookStack content via webhooks.
-- `kb_documents`, `kb_chunks`, `kb_chunks_fts`: uploaded documents managed by the admin CLI.
+- `bookstack_content`, `bookstack_chunks`, `bookstack_fts`, `bookstack_chunks_fts`: mirrors BookStack content via webhooks. Created and, for installations made by older versions, replaced by `ensure_bookstack_schema()` at startup.
+- `kb_documents`, `kb_chunks`, `kb_chunks_fts`, `kb_tags`: uploaded documents managed by the admin CLI. Created by `ensure_kb_schema()` at startup and by the CLI on first use.
 
 At query time both indexes are searched in parallel using a multi-strategy FTS5 pipeline (title match, exact phrase, AND/OR keyword sets, proximity, chunk-level, fuzzy fallback). The result sets are fused with a score bonus per matching strategy, and the top candidates are handed to the LLM as context for the final answer.
 
@@ -72,23 +72,24 @@ The `chatbot/llm/` module exposes a single interface, `LLMProvider`, with implem
 
 ```python
 class LLMProvider(ABC):
-    def __init__(self, name: str, config: dict = None): ...
+    model: str = ""
+
+    def __init__(self, name: str): ...
 
     @abstractmethod
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str: ...
-
-    @abstractmethod
-    def complete(self, prompt: str, **kwargs) -> str: ...
+        # raises LLMError with a message safe to show to a visitor
 
     @abstractmethod
     def is_available(self) -> bool: ...
-
-    def get_info(self) -> Dict[str, Any]: ...
 ```
 
-`factory.py` chooses an implementation at startup based on env vars, with explicit preference order. Switching providers is one env-var change and a container restart.
+`get_llm_provider()` in `factory.py` chooses per request, Azure first, then Ollama
+when `ENABLE_OLLAMA_FALLBACK=true`; each provider is built once per process so its
+HTTP connections are reused. Switching providers is one env-var change and a container
+restart.
 
-There is no separate LLM reranking step today. The only LLM call is the final answer-generation `chat()`. If you want a true reranker, build it on top of the `LLMProvider` interface and insert it between `ResultFusion.fuse_and_rank_results()` and `ChatContextBuilder.build_combined_context()` in `chatbot/chat/widget_service.py`.
+There is no separate LLM reranking step today. The only LLM call is the final answer-generation `chat()`. If you want a true reranker, build it on top of the `LLMProvider` interface and insert it in `ContextService.build_knowledge_context()` (`chatbot/documents/knowledge_base/services/context.py`), between the hybrid search and `ChunkSelectionStrategy.build_context()`.
 
 ## Widget-Only Architecture
 
@@ -136,7 +137,7 @@ Visitor   widget.html    chatbot         SQLite FTS5     LLM
    │          │             │                │            │
    │          │             │ FTS5 query     │            │
    │          │             ├───────────────►│            │
-   │          │             │ top-10 chunks  │            │
+   │          │             │ ≤3 docs × 3 excerpts        │
    │          │             │◄───────────────┤            │
    │          │             │                │            │
    │          │             │ answer with sources         │
@@ -150,7 +151,7 @@ Visitor   widget.html    chatbot         SQLite FTS5     LLM
 ```
 
 The retrieval step returns at most three documents and at most three chunks each,
-capped at 3000 tokens in total (`ContextService.MAX_CONTEXT_DOCS` and
+capped at 3000 words in total (`ContextService.MAX_CONTEXT_DOCS` and
 `ChunkSelectionStrategy.build_context`).
 
 Typical end-to-end latency, Azure OpenAI `gpt-4o-mini`, 150-page wiki, single user:
@@ -163,8 +164,9 @@ under 10 ms on that corpus.
 |---|---|
 | Which LLM is used | `.env` (`AZURE_OPENAI_*`, `ENABLE_OLLAMA_FALLBACK`) |
 | Add a new LLM provider | `chatbot/llm/providers/` (implement `LLMProvider`) and register in `chatbot/llm/factory.py` |
-| Chunk size / overlap | `chatbot/bookstack/chunking.py` for wiki content; `chatbot/documents/knowledge_base/services/chunking.py` for uploaded docs |
-| Prompt template | `chatbot/chat/widget_service.py` (`default_system_prompt`, or override it with `CHATBOT_SYSTEM_PROMPT`) |
+| Chunk size / overlap | `DEFAULTS` in `chatbot/bookstack/chunking.py` for wiki content and in `chatbot/documents/knowledge_base/services/chunking.py` for uploaded docs; the algorithm is `chatbot/utils/text_chunking.py` |
+| Prompt template | `chatbot/chat/widget_service.py` (`DEFAULT_SYSTEM_PROMPT`, or override it with `CHATBOT_SYSTEM_PROMPT`) |
+| Search terms, stopwords, synonyms | `chatbot/documents/knowledge_base/services/query_processor/` (`constants.py`, `preprocessor.py`) |
 | How retrieved sources are rendered | `chatbot/documents/knowledge_base/services/strategies/chunk_strategy.py` |
 | How much of the current page travels along | `ChatContextBuilder.PAGE_CONTEXT_CHARS` in `chatbot/chat/context_builder.py` |
 | Rate-limit / IP allow-list | `.env` (`ALLOWED_VPN_IPS`, `RATE_LIMIT_PER_MINUTE`); enforcement is in `chatbot/utils/rate_limiter.py` |

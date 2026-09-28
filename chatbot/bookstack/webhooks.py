@@ -123,43 +123,36 @@ def bookstack_webhook():
         client = get_bookstack_client()
         sync_service = ContentSyncService(client)
 
-        # Handle different event types
-        if "page" in event:
-            page_id = data.get("related", {}).get("page", {}).get("id")
-            if page_id:
-                # Invalidate cache for this page
-                client.invalidate_cache(f"page_{page_id}")
+        # BookStack sends the affected item as `related_item`, with its parents'
+        # ids alongside; the item's public URL is the top-level `url`.
+        item = data.get("related_item") or {}
+        item_id = item.get("id")
+        if not item_id:
+            logger.warning(f"Webhook {event} without related_item.id, ignored")
+            return jsonify({"error": "related_item.id missing"}), 400
 
-                if event == "page_delete":
-                    # Remove from index
-                    sync_service.remove_page_from_index(page_id)
-                else:
-                    # Re-index the page
-                    sync_service.sync_page(page_id)
+        kind = event.split("_", 1)[0]
+        client.invalidate_cache(f"{kind}_{item_id}")
+        # A book sync reads its contents list from the cache; drop the parents so
+        # the next one sees the change.
+        for parent in ("book", "chapter"):
+            if item.get(f"{parent}_id"):
+                client.invalidate_cache(f"{parent}_{item[f'{parent}_id']}")
 
-        elif "chapter" in event:
-            chapter_id = data.get("related", {}).get("chapter", {}).get("id")
-            if chapter_id:
-                client.invalidate_cache(f"chapter_{chapter_id}")
-
-                if event == "chapter_delete":
-                    # The chapter is gone, so the API cannot list its pages any more.
-                    # Remove them by the chapter_id recorded at index time.
-                    sync_service.remove_chapter_from_index(chapter_id)
-                else:
-                    # Re-index all pages in chapter
-                    sync_service.sync_chapter(chapter_id)
-
-        elif "book" in event:
-            book_id = data.get("related", {}).get("book", {}).get("id")
-            if book_id:
-                client.invalidate_cache(f"book_{book_id}")
-
-                if event == "book_delete":
-                    sync_service.remove_book_from_index(book_id)
-                else:
-                    # Re-index entire book
-                    sync_service.sync_book(book_id)
+        if event == "page_delete":
+            sync_service.remove_page_from_index(item_id)
+        elif event == "chapter_delete":
+            # The chapter is gone, so the API cannot list its pages any more.
+            # Remove them by the chapter_id recorded at index time.
+            sync_service.remove_chapter_from_index(item_id)
+        elif event == "book_delete":
+            sync_service.remove_book_from_index(item_id)
+        elif kind == "page":
+            sync_service.sync_page(item_id, url=data.get("url"))
+        elif kind == "chapter":
+            sync_service.sync_chapter(item_id)
+        else:
+            sync_service.sync_book(item_id)
 
         return jsonify({"status": "processed", "event": event}), 200
 

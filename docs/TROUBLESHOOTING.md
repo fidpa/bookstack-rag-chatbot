@@ -13,7 +13,7 @@ Symptom → likely cause → fix. Common issues first.
 | Are you on a page that hides the widget? | Some BookStack admin pages strip custom HTML |
 | Did you save Customisation **and** clear browser cache? | `Ctrl+Shift+R` / `Cmd+Shift+R` |
 
-### "The widget opens but every message says 'Service unavailable'"
+### "The widget opens but every message fails"
 
 ```bash
 docker compose -f docker/docker-compose.yml logs chatbot --tail 50
@@ -21,20 +21,22 @@ docker compose -f docker/docker-compose.yml logs chatbot --tail 50
 
 Look for:
 
-- `Denied <ip> (not in ALLOWED_VPN_IPS)` → your client IP is not on the allow-list. Add it, restart `chatbot`.
+- `Denied <ip> (not in ALLOWED_VPN_IPS)` → your client IP is not on the allow-list. Add it, restart `chatbot`. If `<ip>` is your reverse proxy's address for every visitor, set `TRUSTED_PROXY_HOPS=1`.
 - `ALLOWED_VPN_IPS is set but contains no valid CIDRs - denying all requests` → a typo in the list. Every request is refused until it parses.
-- `LLM provider not configured` → no provider key in `.env`. Set `AZURE_OPENAI_API_KEY` or `ENABLE_OLLAMA_FALLBACK=true`.
-- `rate limit exceeded` → you hit `RATE_LIMIT_PER_MINUTE`. Wait 60 s or raise the limit.
+- `Azure OpenAI not configured and Ollama fallback is disabled` → no provider in `.env`; the widget answers "no AI service is currently available". Set `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT`, or `ENABLE_OLLAMA_FALLBACK=true`.
+- `Rate limit exceeded for IP` → you hit `RATE_LIMIT_PER_MINUTE`. Wait 60 s or raise the limit.
+- The widget shows `Network error` and the browser console a failed request → the page's origin cannot reach `/chat/api/widget`. In production the widget posts to BookStack's own origin, so the reverse proxy must route `/chat/api/` to the chatbot (`docker/nginx-example.conf`).
 
 ### "Widget answers but doesn't cite the wiki"
 
-Two common causes:
+Three common causes:
 
-1. **The index is empty.** No content has reached it yet. Run `samples/load-samples.py`
-   to prove the loop end to end, then look for `Processing BookStack event:` lines in the
-   chatbot log when you edit a real page.
-2. **Webhooks are not configured**, or they arrive and change nothing. The endpoint
-   answers `processed` either way, so the log is the only witness. See
+1. **The index is empty.** The startup log says so (`The BookStack index is empty`).
+   `python resync.py --dry-run` inside the chatbot container shows what it holds;
+   `--full-resync` fills it.
+2. **Webhooks are not configured**, or they are blocked: look for
+   `Processing BookStack event:` lines in the chatbot log when you edit a page, and for
+   `Denied` lines from the BookStack container's address. See
    [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
 3. **The index drifted.** If it cites pages that are gone, or misses pages that exist,
    rebuild it with `python resync.py --full-resync` inside the chatbot container. See
@@ -81,7 +83,7 @@ docker compose -f docker/docker-compose.yml logs chatbot --tail 100
 Typical causes:
 
 - A missing env var will **not** stop it. `SECRET_KEY` falls back to a built-in literal and `ALLOWED_VPN_IPS` falls back to allowing everything, both silently; look for the startup warnings rather than a crash.
-- Database file permissions. The container runs as `1000:1000`; if you bind-mounted a host directory owned by root, fix the host permissions: `sudo chown -R 1000:1000 ./data`.
+- Database file permissions: `Schema setup failed for /app/data/chatbot.db: unable to open database file`. The container runs as `1000:1000`. The image's `/app/data` belongs to that user since v0.3.0, so a fresh `chatbot_data` volume is writable; a volume created by an older image stays root-owned. Fix it once with `docker compose -f docker/docker-compose.yml run --rm --user root chatbot chown -R 1000:1000 /app/data`.
 - Out of memory. Raise `deploy.resources.limits.memory` for the `chatbot` service in `docker/docker-compose.yml`; it is 4 GB by default.
 
 ### "SQLite database is locked"
@@ -91,13 +93,13 @@ This happens if you run the admin CLI on the host while the container is also wr
 ```bash
 # Stop the container, then run the CLI, then start it again
 docker compose -f docker/docker-compose.yml stop chatbot
-PYTHONPATH=chatbot python3 scripts/kb_admin.py bulk reindex --force
+python3 scripts/kb_admin.py bulk reindex --force
 docker compose -f docker/docker-compose.yml start chatbot
 ```
 
 For ad-hoc reads (`documents list`, `index status`, `maintenance health-check`) the lock
-is usually not a problem and the container can keep running. The CLI needs `PYTHONPATH`
-and a reachable `DATABASE_PATH`; see [KB_ADMIN_CLI.md](KB_ADMIN_CLI.md).
+is usually not a problem and the container can keep running. The CLI needs a reachable
+`DATABASE_PATH`; see [KB_ADMIN_CLI.md](KB_ADMIN_CLI.md).
 
 ## LLM Providers
 
@@ -123,6 +125,7 @@ RATE_LIMIT_PER_MINUTE=5         # cap user-side too
 - Is it actually running? `curl http://localhost:11434/api/tags`
 - Is `OLLAMA_BASE_URL` correct? From inside the chatbot container, `host.docker.internal` resolves to the host. From the host shell, `localhost` works.
 - Is `ENABLE_OLLAMA_FALLBACK=true` set?
+- Is the model pulled? The log says `Model <name> not found in Ollama` otherwise. `ollama pull mistral`, or set `OLLAMA_MODEL` to one you have.
 
 ## Performance
 
@@ -130,8 +133,8 @@ RATE_LIMIT_PER_MINUTE=5         # cap user-side too
 
 | Likely cause | Verify | Fix |
 |---|---|---|
-| Slow LLM provider | Check chatbot logs for elapsed time per stage | Switch model (e.g. `gpt-4o-mini` instead of `gpt-4`) |
-| Many candidate chunks in the prompt | Look at the assembled context size in the logs | Trim chunk size or shorten `ChatContextBuilder` output |
+| Slow LLM provider | `response_time_ms` in the widget API response | Switch model (e.g. `gpt-4o-mini` instead of `gpt-4`) |
+| Large prompt | `Widget LLM request: … context chars` in the log | Lower `PAGE_CONTEXT_CHARS` or `MAX_CONTEXT_DOCS` (see [CONFIGURATION.md](CONFIGURATION.md)) |
 | Cold SQLite cache | First query after restart | Warms up after a few queries |
 | Slow disk | `iostat -x 1` | Move `chatbot_data` volume to SSD |
 

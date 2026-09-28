@@ -17,25 +17,41 @@ Both run before any LLM call. Three things are worth knowing about the allow-lis
 before you rely on it:
 
 1. **An empty `ALLOWED_VPN_IPS` allows every source.** The decorator logs one warning
-   at startup and then passes everything through. `.env.example` ships it empty.
+   on the first guarded request and then passes everything through. `.env.example`
+   ships it empty.
 2. **`IP_ACCESS_CONTROL=false` disables it entirely**, for every endpoint at once.
-3. **`X-Forwarded-For` is trusted as sent.** `_client_ip()` returns the header's first
-   entry when present, so a client that can reach the chatbot directly can name its own
-   source IP. This is only safe behind a proxy that strips the inbound header.
+3. **The address checked is the connecting one** unless `TRUSTED_PROXY_HOPS` is set.
+   With the default `0`, `X-Forwarded-For` is ignored. Behind a reverse proxy every
+   request then comes from the proxy's address, so set `TRUSTED_PROXY_HOPS=1`: werkzeug's
+   `ProxyFix` takes the entry that proxy appended (the rightmost) and ignores what the
+   client sent before it. That is only sound while port 8888 cannot be reached around
+   the proxy; a client talking to it directly could otherwise send the header itself.
+   Before v0.3.0 the leftmost entry was trusted, which any client controls.
 
-Not behind the allow-list: `/health`, `/` (a redirect to BookStack), the static route,
-and `GET|POST /webhook/bookstack/test`, which answers unauthenticated with the list of
-accepted webhook events. `/debug` lists the URL map but returns 403 unless
-`app.debug` is on.
+The rate limiter keeps its request log in memory, shared by the waitress threads under
+a lock, and forgets clients without requests in the last minute.
+
+Not behind the allow-list: `/health` (status and version), `/` (a redirect to
+BookStack), `/chat/widget` (the standalone chat page, whose API calls are guarded),
+`/favicon.ico`, the static route, and `GET|POST /webhook/bookstack/test`, which
+answers unauthenticated with the list of accepted webhook events. `/debug` lists the
+URL map but returns 403 unless `FLASK_DEBUG=true`.
+
+Error responses carry a generic message; exception text stays in the log.
 
 ## Rendering of model output
 
-`addMessage()` in `bookstack-integration/widget.html` assigns answers with
+`addMessage()` in `bookstack-integration/widget.html`, and its counterpart in the
+standalone page `chatbot/templates/chat/widget.html`, assign answers with
 `contentDiv.textContent = content`, never `innerHTML`. Markup in an answer, whether the
 model produced it or a wiki page smuggled it in, is displayed as text and not parsed,
 so an injected page cannot turn into script running in the reader's BookStack session.
 The chat panel's own chrome is built with `innerHTML` from string literals in the file,
 with no data interpolated into it.
+
+The standalone page accepts page context through `postMessage` only from the origin of
+`BOOKSTACK_EXTERNAL_URL`; a page that frames it from elsewhere cannot feed text into
+the prompt that way.
 
 ## In Scope (we try to defend against this)
 
@@ -78,20 +94,17 @@ the chatbot's answers, and restrict it accordingly. Hardening this is an open ta
 delimiting the context block, adding an explicit data-not-instructions rule to the
 prompt, and validating that answers cite a retrieved source would each raise the bar.
 
-## Logging
+## Logging and stored data
 
-`chatbot/chat/widget_service.py` logs the assembled prompt and every message at `INFO`,
-truncated to 100 and 150 characters:
+The chatbot stores no chat transcripts: conversation history lives in memory for 30
+minutes per session (at most 5000 sessions) and is gone on restart. Nothing about
+visitors is written to the database.
 
-```python
-logger.info(f"Widget LLM Request - System Prompt: {widget_system_prompt[:100]}...")
-logger.info(f"Widget LLM Message {i}: {msg['role']} - {content_preview}")
-```
-
-User questions and retrieved wiki content land in the container log at the default
-`LOG_LEVEL=INFO`. Anyone who can read `docker compose logs` can read what people asked.
-Raise `LOG_LEVEL` to `WARNING` where that matters, and redact before attaching logs to
-an issue.
+The log is a different matter. At the default `LOG_LEVEL=INFO` the search logs the
+keywords it extracted from each question (`Query analysis: ... Keywords=[...]`) and the
+title of the page a visitor asked from. Anyone who can read `docker compose logs` can
+reconstruct roughly what people asked. Set `LOG_LEVEL=WARNING` where that matters, and
+redact before attaching logs to an issue.
 
 ## Hardening Checklist
 
@@ -101,17 +114,17 @@ Before exposing this beyond `localhost`, work through the list.
 
 - [ ] Terminate TLS at a reverse proxy (nginx, Caddy, Traefik). The chatbot speaks plain HTTP.
 - [ ] Restrict `/chat/api/` and `/webhook/` to your LAN or VPN at the proxy, not only at the chatbot.
-- [ ] If the proxy is reachable from the public internet, strip inbound `X-Forwarded-For` before setting your own.
+- [ ] Behind a proxy, set `TRUSTED_PROXY_HOPS=1` and publish only the proxy, not port 8888. `docker/nginx-example.conf` replaces `X-Forwarded-For` rather than appending to it.
 - [ ] Put a real CIDR list in `ALLOWED_VPN_IPS`. Empty means allow all, and `0.0.0.0/0` means the same thing with more typing.
 
 ### Application layer
 
 - [ ] **Set `SECRET_KEY`.** `chatbot/config.py` falls back to the literal
-      `"chatbot-dev-secret-change-in-production"` when the variable is unset, and the
-      app starts without complaint. Flask session cookies are then signed with a key
-      that is published in this repository.
+      `"chatbot-dev-secret-change-in-production"` when the variable is unset. Nothing
+      is signed with it today, but anything added later would be signed with a key
+      published in this repository.
 - [ ] Rotate `SECRET_KEY`, `BOOKSTACK_TOKEN_SECRET` and `MYSQL_ROOT_PASSWORD` on a schedule.
-- [ ] Keep `FLASK_DEBUG=false` and `FLASK_ENV=production`. The `.env.example` defaults are already correct.
+- [ ] Keep `FLASK_DEBUG=false`. The `.env.example` default is already correct.
 - [ ] Keep `ENABLE_OLLAMA_FALLBACK=false` unless you run a hardened Ollama instance yourself.
 - [ ] Keep `IP_ACCESS_CONTROL=true`.
 - [ ] Pick a `RATE_LIMIT_PER_MINUTE` you have thought about. 30 suits an internal wiki.
@@ -124,12 +137,12 @@ The shipped `docker-compose.yml` already sets:
 - `security_opt: no-new-privileges:true` on all three services
 - Health checks on all three services
 - CPU and memory limits on `chatbot` (2 vCPU / 4 GB, reserving 0.5 / 512 MB). BookStack and MariaDB run without limits.
-- `user: "1000:1000"` on `chatbot`
+- `user: "1000:1000"` on `chatbot`; the image itself also runs as uid 1000 and owns `/app/data`
 - Pinned image tags (`linuxserver/bookstack:25.07`, `linuxserver/mariadb:11.5`)
 
 You may want to add:
 
-- [ ] `read_only: true` on `chatbot`, with `tmpfs` where Python needs to write (`/tmp`, `/app/flask_session`).
+- [ ] `read_only: true` on `chatbot`, with `tmpfs` on `/tmp`; the chatbot writes only to the `/app/data` volume.
 - [ ] `cap_drop: [ALL]`.
 - [ ] Resource limits on `bookstack` and `bookstack_db`.
 - [ ] Rootless Docker or a user-namespace remap.

@@ -1,162 +1,52 @@
 #!/usr/bin/env python3
 """
-Startup Migrations
-Automatically runs pending database migrations when the application starts
+Startup schema setup.
+
+Creates the BookStack index and the knowledge-base tables on first start and
+repairs installations made by older versions (see ensure_bookstack_schema and
+ensure_kb_schema). Safe to run on every start.
 """
 
-import os
-import sys
-import sqlite3
 import logging
+import sqlite3
+import sys
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+from bookstack.sync_service import ensure_bookstack_schema
+from documents.knowledge_base.schema import ensure_kb_schema
+from utils.database import get_db_path
+
 logger = logging.getLogger(__name__)
 
 
-def get_db_path():
-    """Get the database path (honours DATABASE_PATH env var)."""
-    return os.environ.get("DATABASE_PATH") or os.path.join(
-        os.path.dirname(__file__), "data", "chatbot.db"
-    )
+def run_startup_migrations() -> bool:
+    """
+    Bring the database schema up to date.
 
-
-def check_and_run_migrations():
-    """Check for and run any pending migrations"""
+    Returns:
+        True on success. A failure is logged and reported, not raised, so the
+        app still starts and /health stays reachable.
+    """
+    db_path = get_db_path()
     try:
-        db_path = get_db_path()
-
-        # Ensure data directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
+        ensure_bookstack_schema(db_path)
+        ensure_kb_schema(db_path)
         with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-
-            # Create migrations table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS db_migrations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    migration_name TEXT UNIQUE NOT NULL,
-                    description TEXT,
-                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            # Refresh the query planner's statistics once per start
+            conn.execute("PRAGMA optimize")
+            if (
+                conn.execute("SELECT COUNT(*) FROM bookstack_content").fetchone()[0]
+                == 0
+            ):
+                logger.warning(
+                    "The BookStack index is empty. Populate it with: "
+                    "python resync.py --full-resync"
                 )
-            """)
-
-            # Check for widget logging migration
-            cursor.execute("""
-                SELECT migration_name FROM db_migrations
-                WHERE migration_name = 'add_widget_logging'
-            """)
-
-            if not cursor.fetchone():
-                logger.info("Running widget logging migration...")
-                run_widget_logging_migration(cursor)
-                conn.commit()
-                logger.info("Widget logging migration completed")
-            else:
-                logger.debug("Widget logging migration already applied")
-
+        return True
     except Exception as e:
-        logger.error(f"Migration check failed: {str(e)}")
-        # Don't fail the app startup, just log the error
-        return False
-
-    return True
-
-
-def run_widget_logging_migration(cursor):
-    """Run the widget logging migration"""
-
-    # Check if widget_chat_logs table already exists
-    cursor.execute("""
-        SELECT name FROM sqlite_master
-        WHERE type='table' AND name='widget_chat_logs'
-    """)
-
-    if cursor.fetchone():
-        logger.info("Widget logging tables already exist")
-        # Just record the migration as applied
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO db_migrations (migration_name, description)
-            VALUES (?, ?)
-        """,
-            ("add_widget_logging", "Add Widget Chat Logging tables and indices"),
-        )
-        return
-
-    # Read and execute migration SQL
-    migration_file = os.path.join(
-        os.path.dirname(__file__), "auth/database/migrations/add_widget_logging.sql"
-    )
-
-    if not os.path.exists(migration_file):
-        logger.error(f"Migration file not found: {migration_file}")
-        return
-
-    with open(migration_file, "r", encoding="utf-8") as f:
-        migration_sql = f.read()
-
-    # Execute migration
-    cursor.executescript(migration_sql)
-
-    # Record migration
-    cursor.execute(
-        """
-        INSERT INTO db_migrations (migration_name, description)
-        VALUES (?, ?)
-    """,
-        ("add_widget_logging", "Add Widget Chat Logging tables and indices"),
-    )
-
-
-def verify_migrations():
-    """Verify that all expected tables exist"""
-    try:
-        db_path = get_db_path()
-
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-
-            # Check for required tables
-            required_tables = ["widget_chat_logs", "widget_chat_fts"]
-
-            missing_tables = []
-            for table in required_tables:
-                cursor.execute(
-                    """
-                    SELECT name FROM sqlite_master
-                    WHERE type='table' AND name=?
-                """,
-                    (table,),
-                )
-
-                if not cursor.fetchone():
-                    missing_tables.append(table)
-
-            if missing_tables:
-                logger.warning(f"Missing tables after migration: {missing_tables}")
-                return False
-            else:
-                logger.debug("All required tables exist")
-                return True
-
-    except Exception as e:
-        logger.error(f"Migration verification failed: {str(e)}")
+        logger.error(f"Schema setup failed for {db_path}: {e}")
         return False
 
 
 if __name__ == "__main__":
-    print("🔄 Running startup migrations...")
-
-    success = check_and_run_migrations()
-    if success:
-        verification_success = verify_migrations()
-        if verification_success:
-            print("✅ All migrations completed successfully")
-        else:
-            print("⚠️ Migration verification failed")
-            sys.exit(1)
-    else:
-        print("❌ Migration failed")
-        sys.exit(1)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    sys.exit(0 if run_startup_migrations() else 1)

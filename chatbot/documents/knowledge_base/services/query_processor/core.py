@@ -7,7 +7,6 @@ import logging
 from typing import List
 from .models import QueryIntent, QueryAnalysis
 from .analyzer import QueryAnalyzer
-from .suggestions import QuerySuggestions
 from .preprocessor import QueryPreprocessor
 from .constants import SYNONYMS
 
@@ -133,25 +132,3 @@ class QueryProcessor:
     def preprocess_for_fts5(cls, query: str) -> str:
         """Wrapper für FTS5 preprocessing"""
         return QueryPreprocessor.preprocess_for_fts5(query)
-
-    @classmethod
-    def suggest_alternative_queries(
-        cls, original_query: str, found_count: int = 0
-    ) -> List[str]:
-        """Wrapper für alternative query suggestions"""
-        # Analysiere die ursprüngliche Query
-        analysis = cls.analyze_query(original_query)
-        return QuerySuggestions.suggest_alternative_queries(
-            original_query, analysis, found_count
-        )
-
-    @classmethod
-    def get_search_explanation(cls, analysis: QueryAnalysis) -> str:
-        """Erstellt eine Erklärung der Suche für Debug/UI"""
-        explanation = f"Suche nach: {analysis.original_query}\n"
-        explanation += f"Intent: {analysis.intent.value}\n"
-        explanation += f"Hauptbegriffe: {', '.join(analysis.must_have_terms)}\n"
-        explanation += f"Weitere Begriffe: {', '.join(analysis.nice_to_have_terms)}\n"
-        explanation += f"Suchvarianten: {len(analysis.search_queries)}"
-
-        return explanation
