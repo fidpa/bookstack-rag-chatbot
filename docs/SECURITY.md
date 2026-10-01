@@ -57,10 +57,14 @@ So the token decides who may read what through the chatbot:
 
 - Create it for a dedicated user whose role can only view content that everyone with
   chatbot access may read (see [SETUP.md](SETUP.md), step 5). Never use an administrator's.
-- Restricting a page afterwards removes it from the index only with the next full resync
-  (`resync.py --full-resync`). BookStack does send a `permissions_update` webhook for such a
-  change, but the chatbot does not subscribe to it yet, so run the resync after changing
-  permissions on content the token's user could see.
+- Restricting a page, chapter or book afterwards removes it from the index a few seconds
+  later, through the `permissions_update` webhook (since v0.5.0; it has to be subscribed,
+  see [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md#changed-permissions)). Until the job has
+  run, and whenever the webhook did not reach the chatbot or the job gave up (`Webhook job
+  … gave up` in the log), the page stays answerable.
+- Changes that BookStack reports without naming an item do not reach the index: editing a
+  role, giving the token's user other roles, and *Copy permissions to books* on a shelf.
+  Run `resync.py --full-resync` after those.
 - A deployment that needs per-user answers needs a different design; the chatbot does not
   offer one.
 

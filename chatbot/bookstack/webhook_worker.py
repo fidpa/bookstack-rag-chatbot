@@ -1,12 +1,13 @@
 """Runs webhook syncs after the response, in order, and retries them.
 
 BookStack sends `page_create`, `chapter_create`, `book_create`, `page_move`,
-`chapter_move` and `book_sort` from inside the database transaction that makes the
-change (and, with its default queue, before it answers the editor's request). A sync
-that reads BookStack back while the request is still being handled sees the state from
-before the commit: a new page is still a draft, a new chapter does not exist yet. So
-the endpoint only queues the work; this worker runs it a moment later and tries again
-while the item is not visible yet, or while BookStack does not answer.
+`chapter_move`, `book_sort` and (from the form) `permissions_update` from inside the
+database transaction that makes the change (and, with its default queue, before it
+answers the editor's request). A sync that reads BookStack back while the request is
+still being handled sees the state from before the commit: a new page is still a
+draft, a new chapter does not exist yet. So the endpoint only queues the work; this
+worker runs it a moment later and tries again while the item is not visible yet, or
+while BookStack does not answer.
 
 One thread runs the jobs one after the other, so events are applied in the order they
 are due and never write to the index in parallel.

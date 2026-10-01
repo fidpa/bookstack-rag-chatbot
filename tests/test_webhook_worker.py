@@ -109,3 +109,23 @@ def test_a_full_queue_refuses_more_jobs_instead_of_growing():
     with pytest.raises(QueueFull):
         worker.submit("three", lambda: True, 0.0, ())
     assert worker.pending == 2
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_dead_worker_thread_is_replaced_on_the_next_submit(worker):
+    # The thread is a daemon started on the first submit; if it ever ends, the
+    # next event must start a new one rather than queue into nothing.
+    def fatal():
+        raise SystemExit  # not an Exception, so it ends the thread
+
+    worker.submit("fatal", fatal, 0.0, ())
+    dead = worker._thread
+    dead.join(5)
+    assert not dead.is_alive()
+    with worker._cv:
+        worker._pending -= 1  # the job that ended the thread never finished
+
+    ran = []
+    worker.submit("second", lambda: ran.append(1) or True, 0.0, ())
+    assert worker.wait_idle(5)
+    assert ran == [1]

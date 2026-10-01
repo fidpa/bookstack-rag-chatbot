@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-02: Restricted pages leave the index within seconds, and large wikis sync despite BookStack's rate limit
+
+### Added
+- **A page, chapter or book that the token's user may no longer see leaves the index a
+  few seconds after its permissions change.** Until now the chatbot did not subscribe to
+  `permissions_update`, so a restricted page stayed answerable until the next
+  `resync.py --full-resync`. The handler tells page, chapter and book apart by the
+  payload's URL (BookStack 25.07 sends no type; a shelf is ignored) and reads the item back
+  as the token's user two seconds later. A `404` removes it together with what the index
+  records under it. A visible item is synced, and each row the index records under a
+  visible chapter or book that the walk did not return is read on its own and removed only
+  on a `404`, so a page the index still lists under an old book is moved, not deleted.
+  Measured against BookStack 25.07.3 with the permissions form: a restricted page, chapter
+  (20 pages) or book (100 pages) left the index 2.5 to 2.6 s after saving; made visible
+  again, they were back after 3.2 s, 9.1 s and 34.6 s. The webhook now listens to 15
+  events; subscribe to the new one (see Upgrade notes). Editing a role, giving the token's
+  user other roles and *Copy permissions to books* on a shelf send no event that names an
+  item and still need a full resync (`docs/SECURITY.md`).
+
+### Fixed
+- **A full resync or a webhook for a large book no longer fails at BookStack's API rate
+  limit.** BookStack answers at most 180 API requests per minute from one client address
+  by default, then `429` with `Retry-After`. The client failed the read at once: against
+  BookStack 25.07.3, a full resync of 3 books, 5 chapters and 500 pages ended after 59 s
+  with `errors: 9`, 179 of 508 items indexed and nothing pruned, and a `book_update` for a
+  book with 300 pages gave up after four attempts and 4 min 17 s, because every attempt
+  read the whole book again. The client now waits for `Retry-After` plus a second (at most
+  61 s, up to five times per request, with a warning in the log) and asks again. The same
+  resync now completes in 169 s with `errors: 0` (162 s with `API_REQUESTS_PER_MIN=1000`),
+  and the book syncs in one attempt of 104 s. While a webhook job waits, the jobs behind it
+  wait too. The new constants are `RATE_LIMIT_WAITS`, `RATE_LIMIT_MAX_WAIT` and
+  `RATE_LIMIT_FALLBACK_WAIT` in `chatbot/bookstack/api_client.py`.
+- **A page or chapter moved where the token's user may not see it leaves the index.** Any
+  event other than a create that read the item as `404` gave up and left it answerable
+  until a full resync; live, a page moved into a restricted book stayed in the index. Such
+  an item is now removed (3.5 s after the move in the same test). Only BookStack's own JSON
+  `404` counts: a `404` page from a proxy or a wrong `BOOKSTACK_API_URL`, `401`, `403` and
+  `5xx` remove nothing.
+- **`docs/TROUBLESHOOTING.md` said the rate limit counts per API user.** It counts per
+  client address: against BookStack 25.07.3, an admin token and the read-only token sent
+  from one host drew on the same 180 requests (`ThrottleApiRequests` runs before
+  `ApiAuthenticate`). The section now explains the wait and when raising
+  `API_REQUESTS_PER_MIN` still helps.
+
+### Changed
+- **`BookStackClient` has `get_item(kind, id)`, and `BookStackAPIError` carries
+  `not_found`.** `get_item` raises on every failure instead of returning `None`, so a
+  caller can tell a hidden item from a refused token; `not_found` is true only for
+  BookStack's own `404`. Every request may now block for up to five rate-limit waits before
+  it raises; code of your own that calls the client should allow for that.
+
+### Upgrade notes
+No schema change, no new variable.
+
+1. Update the code and rebuild the chatbot (`up -d` alone keeps the old image):
+
+       docker compose --env-file .env -f docker/docker-compose.yml up -d --build
+
+   Check that `curl -s localhost:8888/health` reports `0.5.0`.
+2. In BookStack, **Settings -> Webhooks**, open the chatbot's webhook and additionally
+   select `permissions_update`. Without it the new handler never runs.
+3. Content restricted before the upgrade is still in the index. Remove it once:
+
+       docker compose --env-file .env -f docker/docker-compose.yml exec chatbot \
+           python resync.py --full-resync
+
 ## [0.4.1] - 2026-10-01: Upgrades rebuild the chatbot, and webhook syncs survive a BookStack restart
 
 ### Fixed

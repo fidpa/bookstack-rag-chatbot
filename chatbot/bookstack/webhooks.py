@@ -5,16 +5,19 @@ Handles incoming webhooks from BookStack for real-time content updates.
 """
 
 import os
+import re
 import hmac
 import hashlib
 import logging
 import threading
 from collections import OrderedDict
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 from flask import request, Blueprint, jsonify
 from functools import wraps
 
 from utils.rate_limiter import require_allowed_ip
+from .api_client import BookStackAPIError
 from .webhook_worker import GiveUp, QueueFull, WebhookWorker
 
 logger = logging.getLogger(__name__)
@@ -94,7 +97,28 @@ RELEVANT_EVENTS = [
     "book_sort",
     # Restoring from the recycle bin. The payload carries no item, only the restore URL.
     "recycle_bin_restore",
+    # Changed permissions on a page, chapter, book or shelf. The payload names the
+    # item but not its type, and not who may see it now.
+    "permissions_update",
 ]
+
+# The item a permissions_update is about, told apart by its URL: BookStack 25.07
+# sends no type, and a chapter's keys differ from a book's only by `book_id`. The
+# patterns match the end of the path, so a BookStack under a sub-path works too.
+_PERMISSION_TARGETS = (
+    ("page", re.compile(r"/books/[^/]+/page/[^/]+/?$")),
+    ("chapter", re.compile(r"/books/[^/]+/chapter/[^/]+/?$")),
+    ("book", re.compile(r"/books/[^/]+/?$")),
+)
+
+
+def _permissions_target(url: Optional[str]) -> Optional[str]:
+    """page, chapter or book for a permissions_update URL; None for a shelf or else."""
+    path = urlparse(url or "").path
+    for kind, pattern in _PERMISSION_TARGETS:
+        if pattern.search(path):
+            return kind
+    return None
 
 
 def verify_hmac_signature(secret: str, payload: bytes, signature: str) -> bool:
@@ -163,8 +187,10 @@ def _sync_item(
     a chapter or book that cannot be loaded yet, are not visible until BookStack
     has committed; for a create event (`created`) the worker retries those. Any
     event is retried while BookStack does not answer, also when only a page inside
-    a book or chapter could not be read; otherwise an item that cannot be read is
-    given up on at once.
+    a book or chapter could not be read. Otherwise an existing item that the API
+    answers with 404 (deleted, or moved under a book or chapter the token's user
+    may not see) leaves the index, and one that cannot be read for another reason
+    is given up on at once.
     """
     from .api_client import get_bookstack_client
     from .sync_service import ContentSyncService
@@ -182,10 +208,38 @@ def _sync_item(
         return False
     if done or created:
         return done
+    try:
+        if sync_service.remove_if_hidden(kind, item_id):
+            return True
+    except BookStackAPIError:
+        if sync_service.unreachable:
+            return False
     raise GiveUp(
-        f"{kind} {item_id} could not be read or stored, see the error above. A 404 "
-        "means it was deleted or is hidden from the API token's user, a 401 that "
-        "BookStack refuses the token. If it belongs in the index, run "
+        f"{kind} {item_id} could not be read or stored, see the error above. A 401 "
+        "means BookStack refuses the token. If it belongs in the index, run "
+        "resync.py --full-resync"
+    )
+
+
+def _recheck_item(kind: str, item_id: int, url: Optional[str]) -> bool:
+    """
+    Apply changed permissions on one page, chapter or book. True when done, False
+    to try again while BookStack does not answer.
+    """
+    from .api_client import get_bookstack_client
+    from .sync_service import ContentSyncService
+
+    sync_service = ContentSyncService(get_bookstack_client())
+    if kind == "page":
+        url = _current_url(kind, item_id, url)
+    done = sync_service.recheck_access(kind, item_id, url=url)
+    if sync_service.unreachable:
+        return False
+    if done:
+        return True
+    raise GiveUp(
+        f"permissions of {kind} {item_id} changed, but it or an item inside it "
+        "could not be read or stored, see the error above; run "
         "resync.py --full-resync"
     )
 
@@ -249,6 +303,22 @@ def bookstack_webhook():
         if not item_id:
             logger.warning(f"Webhook {event} without related_item.id, ignored")
             return jsonify({"error": "related_item.id missing"}), 400
+
+        if event == "permissions_update":
+            url = data.get("url")
+            target = _permissions_target(url)
+            if target is None:
+                # A shelf holds no content; its permissions do not reach its books
+                logger.info(f"permissions_update for {url} ignored: not indexed")
+                return jsonify({"status": "ignored"}), 200
+            _remember_url(target, item_id, url)
+            return _queue(
+                event,
+                f"{event} {target} #{item_id}",
+                lambda: _recheck_item(target, item_id, url),
+                SYNC_DELAY_SECONDS,
+                RETRY_DELAYS,
+            )
 
         kind = event.split("_", 1)[0]
 

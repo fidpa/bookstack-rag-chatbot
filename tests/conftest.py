@@ -127,6 +127,39 @@ class FakeBookStack:
     def get_page(self, page_id):
         return self.pages.get(page_id)
 
+    def get_item(self, kind, item_id):
+        from bookstack.api_client import BookStackAPIError
+
+        item = {"page": self.pages, "chapter": self.chapters, "book": self.books}[
+            kind
+        ].get(item_id)
+        if item is None:
+            raise BookStackAPIError("404 Client Error", status=404, not_found=True)
+        return item
+
+    def hide_page(self, page_id):
+        """What the token's user sees after the page is restricted for its role."""
+        del self.pages[page_id]
+        for chapter in self.chapters.values():
+            chapter["pages"] = [p for p in chapter["pages"] if p["id"] != page_id]
+        for book in self.books.values():
+            book["contents"] = [
+                {**c, "pages": [p for p in c.get("pages", []) if p["id"] != page_id]}
+                for c in book["contents"]
+                if not (c["type"] == "page" and c["id"] == page_id)
+            ]
+
+    def hide_chapter(self, chapter_id):
+        for page in [p for p in self.pages.values() if p["chapter_id"] == chapter_id]:
+            self.hide_page(page["id"])
+        del self.chapters[chapter_id]
+        for book in self.books.values():
+            book["contents"] = [
+                c
+                for c in book["contents"]
+                if not (c["type"] == "chapter" and c["id"] == chapter_id)
+            ]
+
 
 @pytest.fixture
 def fake_bookstack():

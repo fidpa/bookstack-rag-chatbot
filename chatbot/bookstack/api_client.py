@@ -7,8 +7,10 @@ now, so cached copies would only serve stale data.
 """
 
 import os
+import math
 import logging
 import threading
+import time
 import requests
 from typing import List, Dict, Optional
 from functools import wraps
@@ -22,17 +24,53 @@ REQUEST_TIMEOUT = 30
 # BookStack caps list endpoints at 500 items per request by default.
 PAGE_SIZE = 500
 
+# BookStack answers at most 180 API requests per minute from one client address by
+# default (API_REQUESTS_PER_MIN), then 429 with Retry-After, the seconds left in that
+# minute. A full resync or a large book needs more requests than that, so a 429 is
+# waited out here instead of failing the walk: up to RATE_LIMIT_WAITS times per request,
+# each wait capped at RATE_LIMIT_MAX_WAIT seconds, RATE_LIMIT_FALLBACK_WAIT without a
+# usable Retry-After. Every wait also holds up the webhook worker that runs the request.
+RATE_LIMIT_WAITS = 5
+RATE_LIMIT_MAX_WAIT = 60
+RATE_LIMIT_FALLBACK_WAIT = 10
+
+
+def _rate_limit_wait(response) -> float:
+    """Seconds to wait after a 429: Retry-After plus one, within the limits above."""
+    try:
+        seconds = float(response.headers.get("Retry-After"))
+    except (TypeError, ValueError):
+        return float(RATE_LIMIT_FALLBACK_WAIT)
+    if math.isnan(seconds):
+        return float(RATE_LIMIT_FALLBACK_WAIT)
+    # Retry-After counts whole seconds, so the minute can end up to a second later
+    return min(max(seconds, 0.0), RATE_LIMIT_MAX_WAIT) + 1
+
+
+def _is_bookstack_404(response) -> bool:
+    """True if a 404 carries BookStack's own error body: {"error": {"code": 404}}."""
+    try:
+        return response.json()["error"]["code"] == 404
+    except (ValueError, KeyError, TypeError):
+        return False
+
 
 class BookStackAPIError(Exception):
     """A failed BookStack API request.
 
     `status` is the HTTP status, or None when BookStack did not answer at all
-    (refused connection, timeout).
+    (refused connection, timeout). `not_found` is True only for a 404 that BookStack
+    itself sent about an item (its JSON error body): the item is deleted or hidden
+    from the token's user. A 404 page from a proxy or a wrong BOOKSTACK_API_URL is
+    not that.
     """
 
-    def __init__(self, message: str, status: Optional[int] = None):
+    def __init__(
+        self, message: str, status: Optional[int] = None, not_found: bool = False
+    ):
         super().__init__(message)
         self.status = status
+        self.not_found = not_found
 
     @property
     def transient(self) -> bool:
@@ -116,18 +154,36 @@ class BookStackClient:
             JSON response
 
         Raises:
-            BookStackAPIError: If request fails
+            BookStackAPIError: If request fails, or still answers 429 after
+                RATE_LIMIT_WAITS waits
         """
         url = f"{self.base_url}/api/{endpoint}"
         kwargs.setdefault("timeout", REQUEST_TIMEOUT)
 
-        try:
-            response = self.session.request(method, url, **kwargs)
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            logger.error(f"BookStack API request failed: {e}")
-            status = e.response.status_code if e.response is not None else None
-            raise BookStackAPIError(f"API request failed: {e}", status=status)
+        waits = 0
+        while True:
+            try:
+                response = self.session.request(method, url, **kwargs)
+                response.raise_for_status()
+                break
+            except requests.exceptions.RequestException as e:
+                status = e.response.status_code if e.response is not None else None
+                if status == 429 and waits < RATE_LIMIT_WAITS:
+                    waits += 1
+                    delay = _rate_limit_wait(e.response)
+                    logger.warning(
+                        f"BookStack API rate limit reached (429), asking for "
+                        f"{endpoint} again in {delay:.0f} s "
+                        f"(wait {waits} of {RATE_LIMIT_WAITS})"
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.error(f"BookStack API request failed: {e}")
+                raise BookStackAPIError(
+                    f"API request failed: {e}",
+                    status=status,
+                    not_found=status == 404 and _is_bookstack_404(e.response),
+                )
 
         # A page that is not JSON (a login page, another site behind a wrong
         # BOOKSTACK_API_URL) carries a success status: asking again will not help.
@@ -180,6 +236,19 @@ class BookStackClient:
     def get_chapter(self, chapter_id: int) -> Optional[Dict]:
         """Get specific chapter with pages"""
         return self._make_request("GET", f"chapters/{chapter_id}")
+
+    def get_item(self, kind: str, item_id: int) -> Dict:
+        """
+        Read a page, chapter or book (`kind`: page, chapter, book).
+
+        Unlike get_page() and the others it raises on every failure, so that a
+        caller can tell a 404 (deleted, or hidden from the token's user) from a
+        refused token or an unreachable BookStack.
+
+        Raises:
+            BookStackAPIError: If the request fails
+        """
+        return self._make_request("GET", f"{kind}s/{item_id}")
 
 
 # Singleton instance

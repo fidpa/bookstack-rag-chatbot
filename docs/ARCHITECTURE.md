@@ -106,12 +106,13 @@ public-internet deployment needs an auth proxy in front (nginx with OIDC, for ex
 
 ## Webhook-Driven Sync
 
-The chatbot listens on `/webhook/bookstack` for 14 events:
+The chatbot listens on `/webhook/bookstack` for 15 events:
 
 - `page_create`, `page_update`, `page_delete`, `page_move`, `page_restore`
 - `chapter_create`, `chapter_update`, `chapter_delete`, `chapter_move`
 - `book_create`, `book_update`, `book_delete`, `book_sort`
 - `recycle_bin_restore` (carries no item; the whole wiki is walked, without pruning)
+- `permissions_update` (the item is read back as the token's user; what it may no longer see leaves the index)
 
 Bookshelf events are not among them: a bookshelf holds no content of its own, so there is nothing to index (see [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md)).
 

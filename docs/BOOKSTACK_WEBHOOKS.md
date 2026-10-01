@@ -1,7 +1,7 @@
 # BookStack Webhooks
 
 The chatbot keeps its RAG index in sync with BookStack via webhooks. This page
-documents the 14 events it listens to, what the handler actually does with each, and
+documents the 15 events it listens to, what the handler actually does with each, and
 how to configure them.
 
 ## Configuring Webhooks in BookStack
@@ -13,7 +13,7 @@ how to configure them.
    - **Endpoint**: `http://chatbot:8888/webhook/bookstack` (Docker-internal hostname)
    - **Webhook Request Timeout**: a few seconds, e.g. `5` (BookStack 25.07 requires a
      value; the chatbot answers at once, so the timeout only matters when it is down)
-   - **Events**: select the 14 events listed below.
+   - **Events**: select the 15 events listed below.
 4. Save.
 5. Make sure the webhook's source address passes the allow-list: deliveries come from
    the BookStack container, so `ALLOWED_VPN_IPS` must include the Docker network
@@ -30,14 +30,15 @@ once with a full resync (see below).
 > `X-BookStack-Signature` header that stock BookStack never sends. Leave the variable
 > empty unless you run a build that signs. See [SECURITY.md](SECURITY.md).
 
-## The 14 Events
+## The 15 Events
 
 The list matches `RELEVANT_EVENTS` in `chatbot/bookstack/webhooks.py`. The handler
 reads the affected item from `related_item.id`, where BookStack's `WebhookFormatter`
 puts it, and dispatches on the event name: the three delete events remove from the
 index right away, every other event is queued and re-syncs the item a moment later
 (see "When the sync runs" below). A payload without `related_item.id` is answered with
-400, except `recycle_bin_restore`, which carries no item.
+400, except `recycle_bin_restore`, which carries no item. `permissions_update` is
+explained under "Changed permissions" below.
 
 Before v0.3.0 the handler read `related.<type>.id`, a key BookStack never sends, so
 every real delivery was acknowledged and changed nothing.
@@ -58,6 +59,7 @@ every real delivery was acknowledged and changed nothing.
 | `book_sort` | book | `sync_book(id)` |
 | `book_delete` | book | `remove_book_from_index(id)`: the book, its chapters and every page carrying its `book_id` |
 | `recycle_bin_restore` | any | no item in the payload (only the restore URL): a walk over the whole wiki that adds and updates but does not prune, five seconds later |
+| `permissions_update` | page, chapter or book, by its URL | `recheck_access(kind, id)`: an item BookStack answers with its own `404` leaves the index with everything inside it; a visible one is synced, and each page or chapter the index records under it that the walk no longer returns is read on its own and removed only on a `404`. A shelf is ignored |
 
 The API client keeps no cache: every sync reads BookStack as it is at that moment. (Up to
 v0.3.0 it cached items for five minutes, and a book sync could then re-index a page in its
@@ -77,11 +79,50 @@ as a rename, found nothing, and left the pages searchable, so the chatbot could 
 page that no longer existed. An index that drifted that way is repaired by a full
 resync, below.
 
+### Changed permissions
+
+Since v0.5.0 the chatbot subscribes to `permissions_update`, which BookStack sends when the
+permissions of a page, chapter, book or shelf are saved, from the permissions form or from
+`PUT /api/content-permissions/{type}/{id}`. The payload names the item but neither its
+type nor who may see it now, so the handler tells the type from the URL
+(`/books/<b>/page/<p>`, `/books/<b>/chapter/<c>`, `/books/<b>`; a shelf under `/shelves/`
+holds no content and is ignored) and reads the item back as the token's user, two seconds
+later like any other sync:
+
+- `404` with BookStack's own JSON error body: the user may no longer see it. The page, or
+  the chapter or book with every page and chapter the index records under it, is removed.
+  That includes a page whose own permissions still let the user read it: a full resync
+  walks the books' contents and does not reach it either.
+- Visible: it is synced like on `*_update`. For a chapter or book, every row the index
+  records under it that the walk did not return is then read on its own, because the
+  index can be wrong about where an item lives (a page moved to another book keeps its
+  old `book_id` until its own next event). A `404` removes the row, for instance a
+  chapter in the book that is restricted on its own; a page or chapter the API still
+  returns is synced where it is now. This check also runs when another item in the walk
+  failed to load; the job then ends with a hint to run `resync.py --full-resync`, or is
+  retried while BookStack does not answer.
+- Any other failure (`401`, `403`, no answer, a `404` page from a proxy or a wrong
+  `BOOKSTACK_API_URL`) says nothing about the item and removes nothing.
+
+Measured against BookStack 25.07.3 with the permissions form: a restricted page, chapter
+(with 20 pages) or book (with 100 pages) left the index 2.5 to 2.6 seconds after the form
+was saved; made visible again, the page was back after 3.2 s, the chapter after 9.1 s and
+the book after 34.6 s (one API request for the permission check, then one per book,
+chapter and page).
+
+Some permission changes send no event that names an item, and still need a full resync:
+
+- Editing a role (`role_update` names the role, and the token's user may not read which
+  roles it holds), or giving the token's user other roles.
+- *Copy permissions to books* on a shelf, which rewrites the permissions of every book on
+  it without any event.
+
 ### When the sync runs
 
 BookStack sends `page_create`, `chapter_create`, `book_create`, `page_move`,
 `chapter_move` and `book_sort` from inside the database transaction that makes the
-change, and with its default queue (`QUEUE_CONNECTION=sync`) before it has answered the
+change, and so does the permissions form with `permissions_update`. With its default
+queue (`QUEUE_CONNECTION=sync`) that happens before BookStack has answered the
 editor's request. A chatbot that reads
 the item back at that moment sees the state from before the commit (checked against
 BookStack 25.07.3): the new page as a draft with the title "New Page", the new chapter as
@@ -99,15 +140,24 @@ BookStack 25.07.3): the new page as a draft with the title "New Page", the new c
    the API answers `404`, or a page that BookStack reported as published still reads as a
    draft), the job is repeated after 3, 6 and 12 seconds (`RETRY_DELAYS`), then given up on
    with a `Webhook job … gave up` warning in the log. Every event is repeated on the same
-   schedule while BookStack does not answer (refused connection, timeout, `429` or `5xx`),
+   schedule while BookStack does not answer (refused connection, timeout or `5xx`),
    for instance because it is restarting, and that includes a book or chapter whose own
    read worked but one of whose pages failed that way. A request that hangs until the
    30-second timeout makes each attempt that much longer, and the jobs behind it wait.
+   BookStack's API rate limit (180 requests per minute by default) is waited out inside
+   the job instead: on `429` the client sleeps for the `Retry-After` BookStack sends plus
+   a second (at most 61 s, up to five times per request) and asks again, so a book with
+   more items than the limit is synced in one attempt that takes a few minutes. Only a
+   request still refused after five waits counts as BookStack not answering. See
+   [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the numbers.
    Otherwise any other event is read once: an item that already existed and that
-   BookStack refuses (`404`) is deleted or hidden from the token's user. A `gave up`
-   warning is therefore also what a page looks like that the token's user may not see
-   (restricted pages stay out of the index on purpose), so the warning alone is not a
-   fault. A page job uses the URL of the latest page event for that page, so a retried
+   BookStack answers with `404` (its own JSON error, not a proxy's page) is deleted or
+   hidden from the token's user, for instance
+   because it was moved into a book or chapter that user may not see, and it leaves the
+   index together with what the index records under it (since v0.5.0; before, the job
+   gave up and the item stayed answerable until a full resync). Any other refusal (`401`,
+   `403`, an answer without JSON) ends in a `gave up` warning and leaves the index as it
+   is. A page job uses the URL of the latest page event for that page, so a retried
    older job cannot bring back the URL from before a page move or rename. A book renamed
    or a chapter moved to another book changes its pages' URLs without a page event; a
    page job retried after that can still store the old URL until the page's next event
@@ -162,13 +212,18 @@ BookStack webhook  ──HTTP POST──►  chatbot /webhook/bookstack
                                                        │
                                                        ▼
                                           Upsert into bookstack_content, replace chunks
-                                          (FTS tables follow via triggers)
+                                          (FTS tables follow via triggers);
+                                          permissions_update: 404 removes the item
+                                          and its contents; otherwise each row the
+                                          walk no longer returned is read on its
+                                          own and removed only on a 404
 ```
 
 `queued` means the event was accepted, not that the index changed: an API fetch that keeps
-coming back empty (token invalid, item gone) ends in `Webhook job … gave up` in the log and
-nowhere else. A missing `related_item.id` is a 400; an unhandled exception a 500; a full
-queue a 503.
+failing (token invalid, BookStack unreachable for longer than the retries) ends in
+`Webhook job … gave up` in the log and nowhere else. An item that is gone or hidden from
+the token's user is removed from the index instead (since v0.5.0). A missing
+`related_item.id` is a 400; an unhandled exception a 500; a full queue a 503.
 
 ## Failure Modes
 

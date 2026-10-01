@@ -92,8 +92,8 @@ Create a dedicated user instead:
   ("Could not create user since invite email failed to send"). Nobody needs to sign in
   as this user; the password only has to exist.
 
-A page whose permissions exclude that role stays out of the index, and a full resync drops it
-again if it was restricted after it had been indexed. The menu names are those of
+A page whose permissions exclude that role stays out of the index, and the `permissions_update`
+webhook (step 6) drops it again if it is restricted after it was indexed. The menu names are those of
 BookStack 25.07; the token user's visibility is what counts, whatever the menus are called.
 
 Still signed in as the administrator, create the token for that user:
@@ -125,7 +125,7 @@ was created with, so the tokens would stay empty.
 
 Webhooks keep the index in step with every edit: BookStack reports the change and the chatbot reads the item back a couple of seconds later. In BookStack, go to **Settings →
 Webhooks → Create Webhook**, point it at `http://chatbot:8888/webhook/bookstack`, set the
-request timeout (required; `5` seconds will do) and select the 14 events listed in
+request timeout (required; `5` seconds will do) and select the 15 events listed in
 [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
 
 ## 7. Embed the chat widget

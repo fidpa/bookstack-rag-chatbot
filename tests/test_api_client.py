@@ -163,8 +163,15 @@ def test_a_refused_token_raises_for_the_book_list(client, monkeypatch):
 class Status:
     """A response with an error status, as requests builds it."""
 
-    def __init__(self, code):
+    def __init__(self, code, headers=None, body=None):
         self.status_code = code
+        self.headers = headers or {}
+        self.body = body
+
+    def json(self):
+        if self.body is None:
+            raise requests.exceptions.JSONDecodeError("Expecting value", "<html>", 0)
+        return self.body
 
     def raise_for_status(self):
         raise requests.exceptions.HTTPError(f"{self.status_code} Error", response=self)
@@ -194,11 +201,144 @@ def test_an_unreachable_bookstack_raises_for_a_single_item(client, monkeypatch, 
     [(404, False), (429, True), (499, False), (500, True), (503, True)],
 )
 def test_the_error_carries_the_status(client, monkeypatch, code, transient):
+    monkeypatch.setattr(api_client.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(client.session, "request", lambda *a, **k: Status(code))
     with pytest.raises(BookStackAPIError) as raised:
         client.get_all_books()
     assert raised.value.status == code
     assert raised.value.transient is transient
+
+
+class Json:
+    """A success status with a JSON body."""
+
+    status_code = 200
+
+    def __init__(self, data):
+        self.data = data
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.data
+
+
+def test_a_429_is_waited_out_and_asked_again(client, monkeypatch):
+    # Regression: a 429 failed the read at once, so a full resync or a book with
+    # more items than BookStack's 180 requests per minute ended with errors.
+    slept = []
+    answers = [Status(429, {"Retry-After": "7"}), Json({"id": 1})]
+    monkeypatch.setattr(api_client.time, "sleep", slept.append)
+    monkeypatch.setattr(client.session, "request", lambda *a, **k: answers.pop(0))
+    assert client.get_page(1) == {"id": 1}
+    assert slept == [8]
+
+
+@pytest.mark.parametrize(
+    "retry_after, wait",
+    [(None, 10), ("soon", 10), ("nan", 10), ("0", 1), ("-3", 1), ("600", 61)],
+)
+def test_the_wait_after_a_429_is_bounded(client, monkeypatch, retry_after, wait):
+    slept = []
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    answers = [Status(429, headers), Json({})]
+    monkeypatch.setattr(api_client.time, "sleep", slept.append)
+    monkeypatch.setattr(client.session, "request", lambda *a, **k: answers.pop(0))
+    client.get_page(1)
+    assert slept == [wait]
+
+
+def test_a_429_that_does_not_end_is_given_up_on(client, monkeypatch):
+    slept = []
+    asked = []
+
+    def limited(*args, **kwargs):
+        asked.append(1)
+        return Status(429, {"Retry-After": "1"})
+
+    monkeypatch.setattr(api_client.time, "sleep", slept.append)
+    monkeypatch.setattr(client.session, "request", limited)
+    with pytest.raises(BookStackAPIError) as raised:
+        client.get_page(1)
+    assert raised.value.status == 429 and raised.value.transient
+    assert len(slept) == api_client.RATE_LIMIT_WAITS == 5
+    assert len(asked) == 6
+
+
+class RateLimited:
+    """BookStack with a request budget per minute; sleeping starts the next minute."""
+
+    def __init__(self, wire, per_minute):
+        self.wire = wire
+        self.per_minute = per_minute
+        self.left = per_minute
+        self.minutes = 0
+
+    def request(self, method, url, **kwargs):
+        if not self.left:
+            return Status(429, {"Retry-After": "42"})
+        self.left -= 1
+        endpoint = url.split("/api/", 1)[1]
+        if endpoint == "books":
+            return Json({"data": [{"id": 1}], "total": 1})
+        return Json(self.wire.request(method, endpoint))
+
+    def sleep(self, seconds):
+        self.minutes += 1
+        self.left = self.per_minute
+
+
+def test_a_walk_larger_than_the_rate_limit_completes(db_path, client, monkeypatch):
+    # The live case: 3 books, 5 chapters and 500 pages against BookStack's default
+    # 180 requests per minute ended with "errors: 9" and 179 of 508 items indexed.
+    wire = Wire()
+    for i in range(200, 240):
+        wire.pages[i] = {**wire.pages[100], "id": i, "chapter_id": 10 + i % 2}
+    bookstack = RateLimited(wire, per_minute=10)
+    monkeypatch.setattr(client.session, "request", bookstack.request)
+    monkeypatch.setattr(api_client.time, "sleep", bookstack.sleep)
+
+    stats = ContentSyncService(client, db_path=db_path).sync_all()
+
+    assert stats["errors"] == 0
+    assert (stats["books"], stats["chapters"], stats["pages"]) == (1, 2, 42)
+    assert bookstack.minutes == 4  # 46 requests at 10 per minute
+
+
+@pytest.mark.parametrize(
+    "kind, endpoint",
+    [("page", "pages/7"), ("chapter", "chapters/7"), ("book", "books/7")],
+)
+def test_get_item_reads_the_item_and_raises_on_404(client, monkeypatch, kind, endpoint):
+    # get_item decides whether a permissions change removes content; a wrong path
+    # would answer every item with 404.
+    asked = []
+
+    def answer(method, url, **kwargs):
+        asked.append(url)
+        return Status(404, body={"error": {"message": "Not found", "code": 404}})
+
+    monkeypatch.setattr(client.session, "request", answer)
+    with pytest.raises(BookStackAPIError) as raised:
+        client.get_item(kind, 7)
+    assert asked == [f"http://bookstack/api/{endpoint}"]
+    assert raised.value.not_found and not raised.value.transient
+
+
+@pytest.mark.parametrize(
+    "body",
+    [None, {"message": "Not Found"}, {"error": {"code": 500}}, ["error"]],
+)
+def test_only_bookstacks_own_404_means_not_found(client, monkeypatch, body):
+    # A proxy or a wrong BOOKSTACK_API_URL answers 404 with a page of its own; that
+    # says nothing about the item and must not remove it from the index.
+    monkeypatch.setattr(
+        client.session, "request", lambda *a, **k: Status(404, body=body)
+    )
+    with pytest.raises(BookStackAPIError) as raised:
+        client.get_item("page", 1)
+    assert raised.value.status == 404 and not raised.value.not_found
 
 
 class NotJson:

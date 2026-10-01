@@ -479,6 +479,117 @@ class ContentSyncService:
             logger.error(f"Error syncing page {page_id}: {e}")
             return False
 
+    def recheck_access(
+        self, kind: str, item_id: int, url: Optional[str] = None
+    ) -> bool:
+        """
+        Bring one item in line with what the token's user may see now.
+
+        Called after BookStack reports changed permissions on a page, chapter or
+        book (`kind`). An item the API no longer returns (404) leaves the index
+        together with everything inside it. A visible item is synced, and inside
+        a chapter or book every row the walk did not return is asked for on its
+        own (see _recheck_rows): only a 404 removes it.
+
+        Returns:
+            False if the item or something inside it could not be read or stored
+        """
+        try:
+            if self.remove_if_hidden(kind, item_id):
+                return True
+        except BookStackAPIError as e:
+            logger.error(f"Could not read {kind} {item_id}: {e}")
+            return False
+
+        if kind == "page":
+            return self.sync_page(item_id, url=url)
+
+        seen: Set[Tuple[int, str]] = set()
+        self._walk_errors = 0
+        if kind == "chapter":
+            ok = self.sync_chapter(item_id, seen=seen)
+        else:
+            ok = self.sync_book(item_id, seen=seen)
+        if not ok:
+            return False
+        return self._recheck_rows(f"{kind}_id", item_id, seen) and not self._walk_errors
+
+    def remove_if_hidden(self, kind: str, item_id: int) -> bool:
+        """
+        Read a page, chapter or book (`kind`) as the token's user, and if the API
+        answers 404, remove it from the index with everything recorded under it.
+
+        A 404 means the item was deleted or is hidden from the token's user; either
+        way it must not be answerable any more.
+
+        Returns:
+            True if it was removed, False if the API returned it
+
+        Raises:
+            BookStackAPIError: For any other failure, which says nothing about
+                the item (refused token, BookStack not answering, a 404 page that
+                is not BookStack's)
+        """
+        try:
+            self.client.get_item(kind, item_id)
+        except BookStackAPIError as e:
+            self._note_failure(e)
+            if not e.not_found:
+                raise
+            remove = {
+                "page": self.remove_page_from_index,
+                "chapter": self.remove_chapter_from_index,
+                "book": self.remove_book_from_index,
+            }[kind]
+            remove(item_id)
+            logger.info(f"{kind} {item_id} is gone or hidden from the API token")
+            return True
+        return False
+
+    def _recheck_rows(
+        self, column: str, parent_id: int, keep: Set[Tuple[int, str]]
+    ) -> bool:
+        """
+        Ask BookStack about each row under a chapter or book (`column`) not in `keep`.
+
+        Such a row was missing from the walk because it is hidden now, because it
+        failed to load, or because it moved away while the index kept its old
+        parent. So the index is not trusted: a 404 removes the row, a page or
+        chapter that the API still returns is synced where it is now, and any
+        other failure leaves it alone.
+
+        Returns:
+            False if a row could not be checked or synced
+        """
+        assert column in ("chapter_id", "book_id")
+        with self._connect() as conn:
+            rows = [
+                (bookstack_id, content_type)
+                # Chapters first: a hidden chapter takes its pages along
+                for bookstack_id, content_type in conn.execute(
+                    f"SELECT bookstack_id, type FROM bookstack_content WHERE {column} = ? "
+                    "ORDER BY type",
+                    (parent_id,),
+                )
+                if (bookstack_id, content_type) not in keep
+            ]
+        ok = True
+        for bookstack_id, content_type in rows:
+            if not self.is_indexed(content_type, bookstack_id):
+                continue  # went with a chapter removed just before
+            try:
+                if self.remove_if_hidden(content_type, bookstack_id):
+                    continue
+            except BookStackAPIError as e:
+                logger.error(f"Could not read {content_type} {bookstack_id}: {e}")
+                if e.transient:
+                    return False  # the job is retried and asks again
+                ok = False
+                continue
+            sync = self.sync_page if content_type == "page" else self.sync_chapter
+            ok = sync(bookstack_id) and ok
+        return ok
+
     def _note_failure(self, error: Exception) -> None:
         if isinstance(error, BookStackAPIError) and error.transient:
             self.unreachable = True

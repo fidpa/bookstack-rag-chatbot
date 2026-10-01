@@ -501,4 +501,307 @@ def test_a_full_queue_refuses_the_event_with_503(client, monkeypatch):
 
 def test_the_test_endpoint_lists_the_accepted_events(client):
     accepted = client.get("/webhook/bookstack/test").json["accepts"]
-    assert "recycle_bin_restore" in accepted and len(accepted) == 14
+    assert "permissions_update" in accepted and len(accepted) == 15
+
+
+def permissions(kind, item_id, slug="x"):
+    """A permissions_update as BookStack 25.07 sends it: no type, only the URL."""
+    url = {
+        "page": f"https://wiki.example.com/books/handbook/page/{slug}",
+        "chapter": f"https://wiki.example.com/books/handbook/chapter/{slug}",
+        "book": "https://wiki.example.com/books/handbook",
+        "shelf": f"https://wiki.example.com/shelves/{slug}",
+    }[kind]
+    return payload("permissions_update", item_id, url=url)
+
+
+@pytest.mark.parametrize(
+    "url, kind",
+    [
+        ("http://localhost:6875/books/b/page/p", "page"),
+        ("http://localhost:6875/books/b/chapter/c", "chapter"),
+        ("http://localhost:6875/books/b", "book"),
+        ("https://example.com/wiki/books/b/", "book"),
+        ("https://example.com/wiki/books/b/page/p", "page"),
+        ("http://localhost:6875/shelves/s", None),
+        ("http://localhost:6875/books", None),
+        ("http://localhost:6875/books/b/page/p/revisions", None),
+        (None, None),
+    ],
+)
+def test_a_permissions_update_is_told_apart_by_its_url(url, kind):
+    assert webhooks._permissions_target(url) == kind
+
+
+def test_a_page_restricted_afterwards_leaves_the_index(client, db, fake_bookstack):
+    # Regression: the event was not subscribed, and a restricted page stayed in the
+    # answers until the next full resync.
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_page(2)
+    r = post(client, permissions("page", 2))
+    assert r.status_code == 202 and r.json["status"] == "queued"
+    assert titles(db) == ["HR", "Handbook", "Setup"]
+    assert not db.execute(
+        "SELECT 1 FROM bookstack_chunks WHERE chapter_id = 1"
+    ).fetchall()
+
+
+def test_a_page_made_visible_enters_the_index(client, db):
+    post(client, permissions("page", 2, slug="leave"))
+    assert titles(db) == ["Leave"]
+    url = db.execute("SELECT url FROM bookstack_content").fetchone()[0]
+    assert url == "https://wiki.example.com/books/handbook/page/leave"
+
+
+def test_a_restricted_chapter_leaves_with_its_pages(client, db, fake_bookstack):
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_chapter(1)
+    post(client, permissions("chapter", 1))
+    assert titles(db) == ["Handbook", "Setup"]
+
+
+def test_a_restricted_book_leaves_with_everything_in_it(client, db, fake_bookstack):
+    post(client, payload("book_update", 1))
+    del fake_bookstack.books[1]
+    post(client, permissions("book", 1))
+    assert titles(db) == []
+
+
+def test_a_visible_book_drops_what_is_hidden_inside_it(client, db, fake_bookstack):
+    # Restricting a book can leave the book visible but hide a chapter or page in
+    # it that does not override the book's permissions.
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_chapter(1)
+    fake_bookstack.hide_page(1)
+    post(client, permissions("book", 1))
+    assert titles(db) == ["Handbook"]
+
+
+def test_a_visible_chapter_drops_a_page_hidden_inside_it(client, db, fake_bookstack):
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_page(2)
+    post(client, permissions("chapter", 1))
+    assert titles(db) == ["HR", "Handbook", "Setup"]
+
+
+def test_nothing_is_dropped_after_a_walk_with_errors(client, db, fake_bookstack):
+    # A page that fails to load is missing from the walk like a hidden one; removing
+    # it would be wrong, just as sync_all() does not prune after errors.
+    post(client, payload("book_update", 1))
+    fake_bookstack.get_page = lambda page_id: None
+    post(client, permissions("book", 1))
+    assert titles(db) == ["HR", "Handbook", "Leave", "Setup"]
+
+
+def test_a_permissions_update_is_retried_while_bookstack_does_not_answer(
+    client, db, fake_bookstack
+):
+    post(client, payload("book_update", 1))
+    real = fake_bookstack.get_item
+    reads = []
+
+    def unreachable_once(kind, item_id):
+        reads.append(item_id)
+        if len(reads) == 1:
+            raise BookStackAPIError("Connection refused", status=None)
+        return real(kind, item_id)
+
+    fake_bookstack.get_item = unreachable_once
+    fake_bookstack.hide_page(2)
+    post(client, permissions("page", 2))
+    assert len(reads) == 2
+    assert "Leave" not in titles(db)
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_only_a_404_removes_on_a_permissions_update(client, db, fake_bookstack, status):
+    # A refused token (401), a token without API access (403) or a failing BookStack
+    # says nothing about the item; dropping it would empty the index item by item.
+    post(client, payload("book_update", 1))
+
+    def fail(kind, item_id):
+        raise BookStackAPIError(f"{status} Error", status=status)
+
+    fake_bookstack.get_item = fail
+    post(client, permissions("page", 2))
+    assert "Leave" in titles(db)
+
+
+def test_a_shelf_permissions_update_is_ignored(client, db):
+    post(client, payload("book_update", 1))
+    r = client.post("/webhook/bookstack", json=permissions("shelf", 1))
+    assert r.status_code == 200 and r.json["status"] == "ignored"
+    assert titles(db) == ["HR", "Handbook", "Leave", "Setup"]
+
+
+@pytest.mark.parametrize("event", ["page_move", "page_update", "page_restore"])
+def test_a_page_moved_out_of_sight_leaves_the_index(client, db, fake_bookstack, event):
+    # Regression: a page moved into a book the token's user may not see read as
+    # 404; the job gave up and the page stayed answerable until a full resync.
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_page(2)
+    post(client, payload(event, 2))
+    assert titles(db) == ["HR", "Handbook", "Setup"]
+
+
+@pytest.mark.parametrize("event", ["chapter_move", "chapter_update"])
+def test_a_chapter_moved_out_of_sight_leaves_with_its_pages(
+    client, db, fake_bookstack, event
+):
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_chapter(1)
+    post(client, payload(event, 1))
+    assert titles(db) == ["Handbook", "Setup"]
+
+
+def test_a_new_page_that_is_not_found_is_not_removed(client, db, fake_bookstack):
+    # A 404 after page_create only means BookStack has not committed yet.
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_page(2)
+    post(client, payload("page_create", 2))
+    assert "Leave" in titles(db)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refused_read_does_not_remove_on_an_update(
+    client, db, fake_bookstack, status
+):
+    post(client, payload("book_update", 1))
+    fake_bookstack.get_page = lambda page_id: None
+
+    def refuse(kind, item_id):
+        raise BookStackAPIError(f"{status} Error", status=status)
+
+    fake_bookstack.get_item = refuse
+    post(client, payload("page_update", 2))
+    assert "Leave" in titles(db)
+
+
+def test_an_update_whose_recheck_gets_no_answer_is_retried(client, db, fake_bookstack):
+    post(client, payload("book_update", 1))
+    real_get_item = fake_bookstack.get_item
+    fake_bookstack.hide_page(2)
+    checks = []
+
+    def unreachable_once(kind, item_id):
+        checks.append(item_id)
+        if len(checks) == 1:
+            raise BookStackAPIError("Connection refused", status=None)
+        return real_get_item(kind, item_id)
+
+    fake_bookstack.get_item = unreachable_once
+    post(client, payload("page_move", 2))
+    assert len(checks) == 2
+    assert "Leave" not in titles(db)
+
+
+def test_a_page_event_without_draft_counts_as_published(client, db, fake_bookstack):
+    # Only an explicit draft flag means the author has not published yet. A page
+    # event without one that still reads as a draft is retried like a published one.
+    published = fake_bookstack.pages[2]
+    reads = []
+
+    def get_page(page_id):
+        reads.append(page_id)
+        return {**published, "draft": True} if len(reads) < 2 else published
+
+    fake_bookstack.get_page = get_page
+    post(client, payload("page_create", 2, book_id=1))
+    assert len(reads) == 2
+    assert titles(db) == ["Leave"]
+
+
+def test_a_restore_waits_its_own_delay(client, monkeypatch):
+    # The restore itself happens after the event, so its walk waits longer than an
+    # item sync.
+    delays = {}
+    submit = webhooks.worker.submit
+
+    def record(label, task, delay, retry_delays):
+        delays[label] = delay
+        submit(label, task, delay, retry_delays)
+
+    monkeypatch.setattr(webhooks, "SYNC_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr(webhooks, "RESTORE_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(webhooks.worker, "submit", record)
+    post(client, {"event": "recycle_bin_restore", "url": "https://wiki.example.com/x"})
+    post(client, payload("page_update", 2))
+    assert delays == {"recycle_bin_restore": 0.02, "page_update #2": 0.01}
+
+
+def test_a_page_the_index_keeps_under_an_old_book_is_not_removed(
+    client, db, fake_bookstack
+):
+    # The index can hold a page under a book it has left (a book_sort of the old
+    # book does not touch it). The book walk misses it; it must be asked for on its
+    # own and kept, under its new book, instead of being pruned.
+    post(client, payload("book_update", 1))
+    fake_bookstack.pages[1]["book_id"] = 2
+    fake_bookstack.books[1]["contents"] = [
+        c for c in fake_bookstack.books[1]["contents"] if c["type"] != "page"
+    ]
+    post(client, permissions("book", 1))
+    assert titles(db) == ["HR", "Handbook", "Leave", "Setup"]
+    row = db.execute("SELECT book_id FROM bookstack_content WHERE title = 'Setup'")
+    assert row.fetchone() == (2,)
+
+
+def test_a_hidden_item_is_removed_even_if_another_failed_to_load(
+    client, db, fake_bookstack, caplog
+):
+    # Each row the walk missed is checked on its own, so one page that fails to
+    # load does not keep a restricted chapter answerable.
+    post(client, payload("book_update", 1))
+    fake_bookstack.hide_chapter(1)
+    fake_bookstack.get_page = lambda page_id: None  # page 1 fails to load
+    post(client, permissions("book", 1))
+    assert titles(db) == ["Handbook", "Setup"]
+    assert "permissions of book 1 changed" in caplog.text
+
+
+def test_a_404_that_is_not_bookstacks_removes_nothing(client, db, fake_bookstack):
+    post(client, payload("book_update", 1))
+
+    def proxy_404(kind, item_id):
+        raise BookStackAPIError("404 Client Error", status=404, not_found=False)
+
+    fake_bookstack.get_item = proxy_404
+    post(client, permissions("book", 1))
+    post(client, payload("page_move", 2))
+    assert titles(db) == ["HR", "Handbook", "Leave", "Setup"]
+
+
+def test_a_permissions_update_stores_its_own_page_url(client, db):
+    # A page event remembered an older URL; the permissions event carries the
+    # current one and must win, as for any newer page event.
+    post(
+        client,
+        payload("page_update", 2, url="https://wiki.example.com/books/old/page/a"),
+    )
+    post(client, permissions("page", 2, slug="new"))
+    url = db.execute("SELECT url FROM bookstack_content").fetchone()[0]
+    assert url == "https://wiki.example.com/books/handbook/page/new"
+
+
+def test_only_rows_the_walk_missed_are_asked_for(client, db, fake_bookstack):
+    # Every row is one more API request against BookStack's rate limit: a check
+    # must stay inside the item, skip what the walk returned, and not ask again
+    # for pages that went with their chapter.
+    post(client, payload("book_update", 1))
+    real_get_item = fake_bookstack.get_item
+    asked = []
+
+    def get_item(kind, item_id):
+        asked.append((kind, item_id))
+        return real_get_item(kind, item_id)
+
+    fake_bookstack.get_item = get_item
+    post(client, permissions("chapter", 1))
+    post(client, permissions("book", 1))
+    assert asked == [("chapter", 1), ("book", 1)]
+
+    asked.clear()
+    fake_bookstack.hide_chapter(1)
+    post(client, permissions("book", 1))
+    assert asked == [("book", 1), ("chapter", 1)]
+    assert titles(db) == ["Handbook", "Setup"]

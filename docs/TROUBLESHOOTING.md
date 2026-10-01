@@ -138,15 +138,35 @@ RATE_LIMIT_PER_MINUTE=5         # cap user-side too
 | Cold SQLite cache | First query after restart | Warms up after a few queries |
 | Slow disk | `iostat -x 1` | Move `chatbot_data` volume to SSD |
 
-### "A full resync or a large book stops with errors, and the log shows `429`"
+### "A full resync or a large book is slow, and the log shows `429`"
 
-BookStack limits each API user to 180 requests per minute by default
-(`API_REQUESTS_PER_MIN`), and the chatbot reads one request per book, chapter and page.
-A book with more items than that, synced by a webhook, or a full resync of a larger wiki
-runs into the limit: the webhook job's retries (after 3, 6 and 12 s) end before the
-minute is over, and a resync that hit errors does not prune. Raise the limit on the
-`bookstack` service, for example `API_REQUESTS_PER_MIN=1000` under `environment:` in
-`docker/docker-compose.yml`, and run `resync.py --full-resync` again.
+BookStack answers at most 180 API requests per minute from one client address by
+default (`API_REQUESTS_PER_MIN`). The count is per address, not per API user: checked
+against BookStack 25.07.3, two tokens of different users sent from one host drew on the
+same budget. The chatbot reads one request per book, chapter and page, so a full resync
+of a larger wiki or a webhook for a book with more than about 180 items runs into the
+limit. BookStack then answers `429` with `Retry-After`, the seconds left in the minute,
+and the client waits that long and asks again, with a warning in the log:
+
+```
+BookStack API rate limit reached (429), asking for pages/174 again in 3 s (wait 1 of 5)
+```
+
+The sync takes longer but completes. Measured against BookStack 25.07.3 with 3 books, 5
+chapters and 500 pages: a full resync took 169 s at the default limit and 162 s with
+`API_REQUESTS_PER_MIN=1000`, because the chatbot itself reads only a little faster than
+180 requests per minute there. While a webhook job waits, the jobs queued behind it wait
+too. A request that is still refused after five waits counts as BookStack not answering
+(see [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md#when-the-sync-runs)).
+
+Raise the limit on the `bookstack` service, for example `API_REQUESTS_PER_MIN=1000` under
+`environment:` in `docker/docker-compose.yml`, if BookStack answers faster than that, or
+if other API clients share the chatbot's address with BookStack, for instance because
+both reach it through the same reverse proxy.
+
+Before v0.5.0 the client did not wait: a `429` failed the read, a book with more than 180
+items never finished through a webhook, and a full resync ended with errors and did not
+prune.
 
 ### "Index rebuild is very slow"
 
