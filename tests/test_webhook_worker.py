@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from bookstack.webhook_worker import QueueFull, WebhookWorker
+from bookstack.webhook_worker import GiveUp, QueueFull, WebhookWorker
 
 
 @pytest.fixture
@@ -58,6 +58,21 @@ def test_it_gives_up_after_the_last_retry_delay(worker, caplog):
     assert worker.wait_idle(5)
     assert len(attempts) == 3
     assert "gave up after 3 attempts" in caplog.text
+
+
+def test_a_task_that_gives_up_is_not_retried(worker, caplog):
+    attempts = []
+
+    def task():
+        attempts.append(1)
+        raise GiveUp("the item is gone")
+
+    worker.submit("gone", task, 0.0, (0.01, 0.01))
+    started = time.monotonic()
+    assert worker.wait_idle(5)
+    assert time.monotonic() - started < 1, "wait_idle was not woken up"
+    assert len(attempts) == 1
+    assert "gave up: the item is gone" in caplog.text
 
 
 def test_an_exception_counts_as_not_done_and_does_not_stop_the_worker(worker):

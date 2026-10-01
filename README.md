@@ -1,6 +1,6 @@
 # BookStack RAG Chatbot
 
-![Version](https://img.shields.io/badge/version-0.4.0-blue)
+![Version](https://img.shields.io/badge/version-0.4.1-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)
 ![Docker](https://img.shields.io/badge/Docker-20.10%2B-blue?logo=docker)
@@ -31,7 +31,7 @@ Self-hosted wikis fill up with content that keyword search cannot find, and a pu
 > - ❌ **SQLite FTS5 is single-writer.** The deployment behind this repository indexes about 150 pages. The 10 000-page figure quoted in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is an estimate from FTS5's behaviour, not a measured ceiling.
 > - ❌ **Single-tenant.** One deployment serves one BookStack instance.
 > - ❌ **BookStack's permissions do not apply to answers.** The chatbot indexes everything the API token's user can see and answers every client that passes the IP allow-list from it, without knowing who is asking. A page that only some roles may open in BookStack can be quoted to anyone who reaches the chatbot. Create the token for a dedicated BookStack user whose role sees only what everyone with chatbot access may read, never for an administrator ([docs/SETUP.md](docs/SETUP.md), [docs/SECURITY.md](docs/SECURITY.md)).
-> - ⚠️ **Webhook syncs are delayed and best-effort.** BookStack sends create, move and sort events from inside its own database transaction, so the chatbot queues each event, reads BookStack back about two seconds later and tries again for roughly 20 seconds while the item is not visible yet (checked against BookStack 25.07.3). A job that still fails is logged (`gave up`) and left to the next full resync; jobs still queued when the container stops are lost ([docs/BOOKSTACK_WEBHOOKS.md](docs/BOOKSTACK_WEBHOOKS.md)).
+> - ⚠️ **Webhook syncs are delayed and best-effort.** BookStack sends create, move and sort events from inside its own database transaction, so the chatbot queues each event, reads BookStack back about two seconds later and tries again for roughly 20 seconds while the item is not visible yet or BookStack does not answer (longer if requests hang until their timeout; checked against BookStack 25.07.3). A job that still fails is logged (`gave up`) and left to the next full resync; jobs still queued when the container stops are lost ([docs/BOOKSTACK_WEBHOOKS.md](docs/BOOKSTACK_WEBHOOKS.md)).
 > - ⚠️ **Ollama fallback is off by default** (`ENABLE_OLLAMA_FALLBACK=false`), so a missing Azure key fails loudly instead of quietly reaching for an unhardened local model. Turn it on explicitly.
 > - ⚠️ **Some internal docstrings, comments and log messages are still in German**, a legacy of the original production deployment. They sit in the upload side of `chatbot/documents/knowledge_base/` (storage and the query analyzer). Everything a visitor sees, the env vars, the CLI and the rest of the code are English. The German stopword and intent lists in `query_processor/constants.py` are language data and stay. PRs translating the rest are welcome.
 
@@ -58,9 +58,9 @@ docker compose --env-file .env -f docker/docker-compose.yml up -d
 # 4. Create the BookStack admin account
 # Open http://localhost:6875 in your browser.
 # Sign in as admin@admin.com with the password "password" (BookStack's default)
-# and change both immediately. Then create the API token, ideally for a dedicated
-# read-only user rather than the admin (docs/SETUP.md, step 5): Settings → Users →
-# (that user) → API Tokens → Create Token.
+# and change both immediately. Then create the API token for a dedicated read-only
+# user, not the admin, whose token would put restricted pages into every answer
+# (docs/SETUP.md, step 5): Settings → Users → (that user) → API Tokens → Create Token.
 # Paste the Token ID and Secret into .env as BOOKSTACK_TOKEN_ID / BOOKSTACK_TOKEN_SECRET.
 
 # 5. Recreate the chatbot so it picks up the new tokens ("restart" would keep
@@ -74,6 +74,7 @@ docker compose --env-file .env -f docker/docker-compose.yml up -d chatbot
 # (My Account → Access & Security → API Tokens) and delete it afterwards.
 # The subshell keeps .env out of your shell: exported variables would win over
 # later edits of .env the next time you run Compose from it.
+# Debian 12 and Ubuntu 24.04 refuse pip here; use: sudo apt install python3-requests
 pip install requests
 (set -a; . ./.env; set +a; python3 samples/load-samples.py)
 

@@ -24,19 +24,37 @@ PAGE_SIZE = 500
 
 
 class BookStackAPIError(Exception):
-    """Custom exception for BookStack API errors"""
+    """A failed BookStack API request.
 
-    pass
+    `status` is the HTTP status, or None when BookStack did not answer at all
+    (refused connection, timeout).
+    """
+
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def transient(self) -> bool:
+        """True if asking again later may succeed: no answer, 429 or a 5xx."""
+        return self.status is None or self.status == 429 or self.status >= 500
 
 
 def with_fallback(func):
-    """Log an API failure and return None instead of raising (single items)."""
+    """
+    Return None instead of raising when BookStack refuses a single item (404, 403).
+
+    A transient failure (see BookStackAPIError.transient) is raised, so that callers
+    can tell "this item cannot be read" from "BookStack cannot be reached right now".
+    """
 
     @wraps(func)
     def wrapper(self, *args, **kwargs):
         try:
             return func(self, *args, **kwargs)
         except Exception as e:
+            if isinstance(e, BookStackAPIError) and e.transient:
+                raise
             logger.error(f"BookStack API error in {func.__name__}: {e}")
             return None
 
@@ -106,10 +124,22 @@ class BookStackClient:
         try:
             response = self.session.request(method, url, **kwargs)
             response.raise_for_status()
-            return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"BookStack API request failed: {e}")
-            raise BookStackAPIError(f"API request failed: {e}")
+            status = e.response.status_code if e.response is not None else None
+            raise BookStackAPIError(f"API request failed: {e}", status=status)
+
+        # A page that is not JSON (a login page, another site behind a wrong
+        # BOOKSTACK_API_URL) carries a success status: asking again will not help.
+        try:
+            return response.json()
+        except ValueError as e:
+            logger.error(f"BookStack API answered {endpoint} with no JSON: {e}")
+            raise BookStackAPIError(
+                f"API answered HTTP {response.status_code} without JSON; "
+                "check BOOKSTACK_API_URL",
+                status=response.status_code,
+            )
 
     def _get_paginated(self, endpoint: str) -> List[Dict]:
         """Fetch every item of a list endpoint, following count/offset paging."""

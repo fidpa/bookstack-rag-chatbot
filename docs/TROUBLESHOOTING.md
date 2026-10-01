@@ -138,6 +138,16 @@ RATE_LIMIT_PER_MINUTE=5         # cap user-side too
 | Cold SQLite cache | First query after restart | Warms up after a few queries |
 | Slow disk | `iostat -x 1` | Move `chatbot_data` volume to SSD |
 
+### "A full resync or a large book stops with errors, and the log shows `429`"
+
+BookStack limits each API user to 180 requests per minute by default
+(`API_REQUESTS_PER_MIN`), and the chatbot reads one request per book, chapter and page.
+A book with more items than that, synced by a webhook, or a full resync of a larger wiki
+runs into the limit: the webhook job's retries (after 3, 6 and 12 s) end before the
+minute is over, and a resync that hit errors does not prune. Raise the limit on the
+`bookstack` service, for example `API_REQUESTS_PER_MIN=1000` under `environment:` in
+`docker/docker-compose.yml`, and run `resync.py --full-resync` again.
+
 ### "Index rebuild is very slow"
 
 `bulk reindex` runs every document through chunking and indexing in one thread, and
@@ -162,13 +172,29 @@ grep -c 'INSERT INTO' bookstack-backup.sql
 docker compose --env-file .env -f docker/docker-compose.yml down -v
 docker compose --env-file .env -f docker/docker-compose.yml up -d
 
-# Restore BookStack (re-run setup, then restore DB)
+# Once "ps" shows bookstack healthy, load the dump over the fresh database
+docker compose --env-file .env -f docker/docker-compose.yml exec -T bookstack_db \
+  sh -c 'mariadb -u bookstack -p"$MYSQL_PASSWORD" bookstackapp' < bookstack-backup.sql
+
+# The chatbot's index went with its volume: rebuild it
+docker compose --env-file .env -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
 ```
 
-The dump holds BookStack's database only. Uploaded images and attachments live in the
-`bookstack_data` volume, which `down -v` deletes as well; copy them out first if you need
-them. Do not dump as `root`: in the MariaDB image `root` signs in from inside the container
-without a password, so `-u root -p"$MYSQL_ROOT_PASSWORD"` is refused and leaves an empty file.
+The dump brings back everything BookStack keeps in its database: users and passwords,
+roles, API tokens (so the ones in `.env` work again), webhooks, the custom head with the
+widget, and all content. Keep `BOOKSTACK_APP_KEY` in `.env` unchanged, or BookStack cannot
+decrypt what it encrypted with it. Do not dump as `root`: in the MariaDB image `root` signs
+in from inside the container without a password, so `-u root -p"$MYSQL_ROOT_PASSWORD"` is
+refused and leaves an empty file.
+
+`down -v` deletes all three volumes, and the dump covers only one of them:
+
+- `bookstack_data` holds BookStack's uploaded images and attachments.
+- `chatbot_data` holds the chatbot's database and the documents uploaded with
+  `kb_admin.py`. The BookStack index is rebuilt by the resync above; uploaded documents
+  are not, and need to be uploaded again unless you copied them out.
+
+Copy out whatever of those you need before `down -v`.
 
 If the issue persists with a fresh stack, open a GitHub Issue with the output of:
 

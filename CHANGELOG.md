@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-01: Upgrades rebuild the chatbot, and webhook syncs survive a BookStack restart
+
+### Fixed
+- **Upgrading needs a rebuild of the chatbot image, and the 0.4.0 upgrade notes did not
+  say so.** The chatbot is built from the repository (`build:` in `docker-compose.yml`),
+  and `docker compose up -d` builds an image only when none exists. A stack upgraded from
+  v0.3.0 as the 0.4.0 notes described got the new BookStack and MariaDB images but kept
+  running the v0.3.0 chatbot (`/health` answered `"version": "0.3.0"`), without any of the
+  webhook fixes; the newly subscribed `recycle_bin_restore` was ignored. Upgrade with
+  `up -d --build` (see Upgrade notes); the compose file's header says so now.
+- **A webhook sync is retried while BookStack does not answer.** Since 0.4.0 only create
+  events were retried. A `page_update` read back while BookStack was restarting got
+  `Connection refused`, was given up on after one attempt, and the edit stayed out of the
+  index until a full resync (seen against BookStack 25.07.3). Every event is now retried
+  after 3, 6 and 12 s while BookStack refuses the connection, times out, or answers `429`
+  or `5xx`, also when a book or chapter loads but one of its pages does not; an item that
+  BookStack answers with `404` (or `401`) is still given up on at once, except after a
+  create event. A request that hangs until the 30-second timeout makes each attempt that
+  long, so the queue waits correspondingly. The `gave up` warning no longer says the item
+  was deleted or restricted when the cause may be a refused token or a failed write.
+- **A retried job no longer brings back an old page URL.** A job retried while BookStack
+  was down could run after a newer event for the same page and store the URL from its
+  own, older payload (before a move or rename). Each page job now uses the URL of the
+  latest page event for that page. A book rename or a chapter move to another book sends
+  no page event, so a page job retried after one of those can still store the old URL.
+- **An answer that is not JSON is not retried.** A wrong `BOOKSTACK_API_URL` or a login
+  page answers `200` with HTML; that counted as "BookStack does not answer". It is now
+  reported as such and given up on.
+- **Restoring after `down -v`.** `docs/TROUBLESHOOTING.md` ended its last-resort recipe
+  with "re-run setup, then restore DB". It now gives the restore command (run against
+  BookStack 25.07.3: users, roles, tokens, webhooks, the custom head and all content came
+  back) and the resync after it, and says that `down -v` also deletes the `chatbot_data`
+  volume with the documents uploaded through `kb_admin.py`.
+- **Setup steps that BookStack 25.07 refuses.** *Add New User* sends an invite email by
+  default and, without mail settings, refuses to save the user; the webhook form requires a
+  request timeout. `docs/SETUP.md` and `docs/BOOKSTACK_WEBHOOKS.md` now say to clear the
+  invite and set a password, and to enter a timeout. `pip install requests` is refused on
+  Debian 12 and Ubuntu 24.04 (externally managed Python); the quickstart names the apt
+  package.
+- **Documentation corrections.** BookStack also sends `book_create` and `chapter_move` from
+  inside its transaction (`BookRepo::create`, `ChapterRepo::move`); `book_create` was
+  already retried and now has a test. The quickstart no longer calls a token for the admin
+  merely second best. `docs/TROUBLESHOOTING.md` explains BookStack's API rate limit (180
+  requests per minute by default, `API_REQUESTS_PER_MIN`), which a large book or a full
+  resync of a larger wiki runs into.
+
+### Changed
+- **`BookStackClient.get_book()`, `get_chapter()` and `get_page()` raise
+  `BookStackAPIError` when BookStack does not answer** (no response, `429`, `5xx`); they
+  return `None` only when BookStack refuses the item or answers without JSON. The
+  exception carries `status` and `transient`. Inside this repository only the sync service
+  calls them, and it handles both; code of your own that calls them should catch the
+  exception.
+
+### Upgrade notes
+No schema change, no new variable. The chatbot image is built from the repository, so
+every upgrade that changes its code needs `--build`; `up -d` alone keeps the old image.
+
+- **From v0.4.0:** update the code, then
+
+      docker compose --env-file .env -f docker/docker-compose.yml up -d --build
+
+- **From v0.3.0:** work through the 0.4.0 upgrade notes first, with one change: where
+  they lead to `up -d`, run the command above instead. Their steps 1 (compare the
+  configuration) and 4 (set `CHATBOT_BIND` if clients reached port 8888 directly) belong
+  before it.
+- **Upgraded to 0.4.0 without `--build`:** BookStack and MariaDB run the new tags, the
+  port binding of 0.4.0 is already in effect (it comes from the compose file), but the
+  chatbot is still v0.3.0. Run the command above, then the full resync from step 6 of the
+  0.4.0 notes.
+
+In every case, check that `curl -s localhost:8888/health` reports the new version.
+
 ## [0.4.0] - 2026-10-01: New pages and moves reach the index, and the quickstart runs as written
 
 ### Fixed

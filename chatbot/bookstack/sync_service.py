@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from html import unescape
 from typing import Dict, Iterator, Optional, Set, Tuple
 
+from .api_client import BookStackAPIError
 from .chunking import BookStackChunkingService
 from utils.database import get_db_path
 from utils.timezone_helpers import format_for_database
@@ -243,6 +244,9 @@ class ContentSyncService:
         self.external_url = os.getenv("BOOKSTACK_EXTERNAL_URL", "").rstrip("/")
         # Chapters and pages that failed to load during a sync_all() walk
         self._walk_errors = 0
+        # Set when a read failed because BookStack did not answer (or answered 429
+        # or 5xx): trying again later may succeed, unlike after a 404
+        self.unreachable = False
 
         ensure_bookstack_schema(self.db_path)
 
@@ -381,6 +385,7 @@ class ContentSyncService:
             return True
 
         except Exception as e:
+            self._note_failure(e)
             logger.error(f"Error syncing book {book_id}: {e}")
             return False
 
@@ -423,6 +428,7 @@ class ContentSyncService:
             return True
 
         except Exception as e:
+            self._note_failure(e)
             logger.error(f"Error syncing chapter {chapter_id}: {e}")
             return False
 
@@ -469,8 +475,13 @@ class ContentSyncService:
             return True
 
         except Exception as e:
+            self._note_failure(e)
             logger.error(f"Error syncing page {page_id}: {e}")
             return False
+
+    def _note_failure(self, error: Exception) -> None:
+        if isinstance(error, BookStackAPIError) and error.transient:
+            self.unreachable = True
 
     def _store_content(
         self,

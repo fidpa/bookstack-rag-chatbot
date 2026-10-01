@@ -8,12 +8,14 @@ import os
 import hmac
 import hashlib
 import logging
-from typing import Optional
+import threading
+from collections import OrderedDict
+from typing import Optional, Tuple
 from flask import request, Blueprint, jsonify
 from functools import wraps
 
 from utils.rate_limiter import require_allowed_ip
-from .webhook_worker import QueueFull, WebhookWorker
+from .webhook_worker import GiveUp, QueueFull, WebhookWorker
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +29,47 @@ WEBHOOK_SECRET = os.getenv("BOOKSTACK_WEBHOOK_SECRET", "")
 # create, move and sort events before its own transaction has committed (see
 # webhook_worker.py), so a read inside the request sees the old state.
 SYNC_DELAY_SECONDS = 2.0
-# Further attempts (seconds after the previous one) while the item is not visible yet
+# Further attempts (seconds after the previous one) while the item is not visible yet,
+# or while BookStack does not answer
 RETRY_DELAYS = (3.0, 6.0, 12.0)
 # Only a new item can be invisible because BookStack has not committed it yet. For
-# any other event an item that cannot be read is deleted or hidden from the token's
-# user, and asking again would only fill the log.
+# any other event an item that BookStack refuses (404) is deleted or hidden from the
+# token's user, and asking again would only fill the log; those are retried only
+# while BookStack cannot be reached.
 CREATE_EVENTS = ("page_create", "chapter_create", "book_create")
 # The recycle-bin event is sent before the restore itself happens and names no
 # item, so the whole wiki is walked (without pruning) some seconds later.
 RESTORE_DELAY_SECONDS = 5.0
 
 worker = WebhookWorker()
+
+# The URL each page was last reported under. A job retried while BookStack was down
+# can run after a newer event for the same page (a move, a rename); it must not store
+# the URL from its own, older payload. The page read API returns no URL of its own.
+_LATEST_URL_LIMIT = 10000
+_latest_url: "OrderedDict[Tuple[str, int], str]" = OrderedDict()
+_latest_url_lock = threading.Lock()
+
+
+def _remember_url(kind: str, item_id: int, url: Optional[str]) -> None:
+    if kind != "page":
+        return  # books and chapters take their URL from the API
+    with _latest_url_lock:
+        if not url:
+            # The newest event names no URL: fall back to the permalink, not to an
+            # older event's URL
+            _latest_url.pop((kind, item_id), None)
+            return
+        _latest_url[(kind, item_id)] = url
+        _latest_url.move_to_end((kind, item_id))
+        while len(_latest_url) > _LATEST_URL_LIMIT:
+            _latest_url.popitem(last=False)
+
+
+def _current_url(kind: str, item_id: int, url: Optional[str]) -> Optional[str]:
+    with _latest_url_lock:
+        return _latest_url.get((kind, item_id), url if url else None)
+
 
 # Bookshelf events are deliberately absent. A shelf groups books and holds no
 # indexable content of its own, and since bookshelf_* starts with the same
@@ -121,24 +153,41 @@ def _queue(event: str, label: str, task, delay: float, retry_delays=()):
     return jsonify({"status": "queued", "event": event}), 202
 
 
-def _sync_item(kind: str, item_id: int, url: Optional[str], published: bool) -> bool:
+def _sync_item(
+    kind: str, item_id: int, url: Optional[str], published: bool, created: bool
+) -> bool:
     """
     Index one page, chapter or book. True when it is done, False to try again.
 
     A page that BookStack reports as published but that reads back as a draft, and
     a chapter or book that cannot be loaded yet, are not visible until BookStack
-    has committed; the worker retries those.
+    has committed; for a create event (`created`) the worker retries those. Any
+    event is retried while BookStack does not answer, also when only a page inside
+    a book or chapter could not be read; otherwise an item that cannot be read is
+    given up on at once.
     """
     from .api_client import get_bookstack_client
     from .sync_service import ContentSyncService
 
     sync_service = ContentSyncService(get_bookstack_client())
     if kind == "page":
+        url = _current_url(kind, item_id, url)
         loaded = sync_service.sync_page(item_id, url=url)
-        return loaded and (not published or sync_service.is_indexed("page", item_id))
-    if kind == "chapter":
-        return sync_service.sync_chapter(item_id)
-    return sync_service.sync_book(item_id)
+        done = loaded and (not published or sync_service.is_indexed("page", item_id))
+    elif kind == "chapter":
+        done = sync_service.sync_chapter(item_id)
+    else:
+        done = sync_service.sync_book(item_id)
+    if sync_service.unreachable:
+        return False
+    if done or created:
+        return done
+    raise GiveUp(
+        f"{kind} {item_id} could not be read or stored, see the error above. A 404 "
+        "means it was deleted or is hidden from the API token's user, a 401 that "
+        "BookStack refuses the token. If it belongs in the index, run "
+        "resync.py --full-resync"
+    )
 
 
 def _walk_wiki() -> bool:
@@ -222,18 +271,23 @@ def bookstack_webhook():
                     f"{event} #{item_id}", lambda: remove(item_id) or True, 0.0, ()
                 )
             except QueueFull:
-                pass  # the removal above stands
+                # The removal above stands; only the guard against a write-back is lost
+                logger.warning(
+                    f"Webhook queue is full, {event} #{item_id} not re-checked"
+                )
             return jsonify({"status": "processed", "event": event}), 200
 
         # Everything else reads BookStack back, which has to wait for its commit.
         published = not item.get("draft")
         url = data.get("url")
+        _remember_url(kind, item_id, url)
+        created = event in CREATE_EVENTS
         return _queue(
             event,
             f"{event} #{item_id}",
-            lambda: _sync_item(kind, item_id, url, published),
+            lambda: _sync_item(kind, item_id, url, published, created),
             SYNC_DELAY_SECONDS,
-            RETRY_DELAYS if event in CREATE_EVENTS else (),
+            RETRY_DELAYS,
         )
 
     except Exception as e:

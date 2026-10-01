@@ -1,11 +1,12 @@
 """Runs webhook syncs after the response, in order, and retries them.
 
-BookStack sends `page_create`, `chapter_create`, `page_move` and `book_sort` from
-inside the database transaction that makes the change (and, with its default queue,
-before it answers the editor's request). A sync that reads BookStack back while the
-request is still being handled sees the state from before the commit: a new page is
-still a draft, a new chapter does not exist yet. So the endpoint only queues the work;
-this worker runs it a moment later and tries again while the item is not visible yet.
+BookStack sends `page_create`, `chapter_create`, `book_create`, `page_move`,
+`chapter_move` and `book_sort` from inside the database transaction that makes the
+change (and, with its default queue, before it answers the editor's request). A sync
+that reads BookStack back while the request is still being handled sees the state from
+before the commit: a new page is still a draft, a new chapter does not exist yet. So
+the endpoint only queues the work; this worker runs it a moment later and tries again
+while the item is not visible yet, or while BookStack does not answer.
 
 One thread runs the jobs one after the other, so events are applied in the order they
 are due and never write to the index in parallel.
@@ -24,6 +25,11 @@ logger = logging.getLogger(__name__)
 class QueueFull(Exception):
     """Too many jobs are waiting. BookStack does not retry a refused webhook, so the
     event is lost until the next full resync."""
+
+
+class GiveUp(Exception):
+    """Raised by a task that will not succeed on a later attempt either; the message
+    says why. The job is dropped without using its remaining retries."""
 
 
 class _Job:
@@ -59,6 +65,7 @@ class WebhookWorker:
 
         `task` returns True when it is done. If it returns False (or raises), it is
         run again after each of `retry_delays`, and given up on after the last one.
+        A task that raises GiveUp is dropped at once.
 
         Raises:
             QueueFull: if `max_pending` jobs are already waiting or running.
@@ -114,6 +121,12 @@ class WebhookWorker:
             job.attempts += 1
             try:
                 done = bool(job.task())
+            except GiveUp as e:
+                logger.warning(f"Webhook job {job.label} gave up: {e}")
+                with self._cv:
+                    self._pending -= 1
+                    self._cv.notify_all()
+                continue
             except Exception:
                 logger.error(f"Webhook job {job.label} failed", exc_info=True)
                 done = False

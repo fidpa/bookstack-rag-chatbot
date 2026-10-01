@@ -82,7 +82,7 @@ These knobs live in Python, not env vars. Edit the listed file to change.
 | `ContextService.MAX_CONTEXT_DOCS` | `3` | `chatbot/documents/knowledge_base/services/context.py` | Documents (wiki items or uploads) that contribute excerpts, up to three excerpts each. |
 | `ChatContextBuilder.PAGE_CONTEXT_CHARS` | `20000` | `chatbot/chat/context_builder.py` | Characters of the page the visitor is on that go into the prompt. |
 | `ChatContextBuilder.MAX_TITLE_CHARS`, `MAX_URL_CHARS` | `300`, `2000` | `chatbot/chat/context_builder.py` | Longest page title and URL taken from the widget's context. |
-| `SYNC_DELAY_SECONDS`, `RETRY_DELAYS`, `RESTORE_DELAY_SECONDS` | `2.0`, `(3.0, 6.0, 12.0)`, `5.0` | `chatbot/bookstack/webhooks.py` | When a queued webhook is synced, how often a create event (or a recycle-bin walk that could not list the books) is retried, in seconds after the previous attempt, and how long a recycle-bin restore waits. |
+| `SYNC_DELAY_SECONDS`, `RETRY_DELAYS`, `RESTORE_DELAY_SECONDS` | `2.0`, `(3.0, 6.0, 12.0)`, `5.0` | `chatbot/bookstack/webhooks.py` | When a queued webhook is synced, how often a create event, any event while BookStack does not answer, or a recycle-bin walk that could not list the books is retried, in seconds after the previous attempt, and how long a recycle-bin restore waits. |
 | `WebhookWorker(max_pending=…)` | `500` | `chatbot/bookstack/webhook_worker.py` | Webhook jobs that may wait at once; more are answered with `503`. |
 | `MAX_MESSAGE_CHARS` | `2000` | `chatbot/chat/widget_service.py` | Longest question the widget API accepts; longer ones get `400`. |
 | `SYNONYMS` | empty | `chatbot/documents/knowledge_base/services/query_processor/constants.py` | Query expansion per keyword, for your wiki's vocabulary. |

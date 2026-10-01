@@ -87,7 +87,10 @@ Create a dedicated user instead:
 
 - **Settings → Roles → Create New Role** (say `chatbot`): system permission *Access System API*,
   and only the *View* permissions for all books, chapters and pages (no create, edit or delete).
-- **Settings → Users → Add New User** with only that role.
+- **Settings → Users → Add New User** with only that role. Clear *Send user invite email*
+  and set a password instead: without mail settings BookStack refuses to save the user
+  ("Could not create user since invite email failed to send"). Nobody needs to sign in
+  as this user; the password only has to exist.
 
 A page whose permissions exclude that role stays out of the index, and a full resync drops it
 again if it was restricted after it had been indexed. The menu names are those of
@@ -121,8 +124,9 @@ was created with, so the tokens would stay empty.
 ## 6. Set up the webhook
 
 Webhooks keep the index in step with every edit: BookStack reports the change and the chatbot reads the item back a couple of seconds later. In BookStack, go to **Settings →
-Webhooks → Create Webhook**, point it at `http://chatbot:8888/webhook/bookstack` and
-select the 14 events listed in [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
+Webhooks → Create Webhook**, point it at `http://chatbot:8888/webhook/bookstack`, set the
+request timeout (required; `5` seconds will do) and select the 14 events listed in
+[BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
 
 ## 7. Embed the chat widget
 
@@ -141,6 +145,7 @@ end up exported in your own shell, where its values would win over later edits o
 the next time you run Compose):
 
 ```bash
+# Debian 12 and Ubuntu 24.04 refuse pip here; use: sudo apt install python3-requests
 pip install requests
 (set -a; . ./.env; set +a; python3 samples/load-samples.py)
 ```

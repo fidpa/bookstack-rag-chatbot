@@ -11,6 +11,8 @@ how to configure them.
 3. Set:
    - **Name**: `chatbot`
    - **Endpoint**: `http://chatbot:8888/webhook/bookstack` (Docker-internal hostname)
+   - **Webhook Request Timeout**: a few seconds, e.g. `5` (BookStack 25.07 requires a
+     value; the chatbot answers at once, so the timeout only matters when it is down)
    - **Events**: select the 14 events listed below.
 4. Save.
 5. Make sure the webhook's source address passes the allow-list: deliveries come from
@@ -77,9 +79,10 @@ resync, below.
 
 ### When the sync runs
 
-BookStack sends `page_create`, `chapter_create`, `page_move` and `book_sort` from inside
-the database transaction that makes the change, and with its default queue
-(`QUEUE_CONNECTION=sync`) before it has answered the editor's request. A chatbot that reads
+BookStack sends `page_create`, `chapter_create`, `book_create`, `page_move`,
+`chapter_move` and `book_sort` from inside the database transaction that makes the
+change, and with its default queue (`QUEUE_CONNECTION=sync`) before it has answered the
+editor's request. A chatbot that reads
 the item back at that moment sees the state from before the commit (checked against
 BookStack 25.07.3): the new page as a draft with the title "New Page", the new chapter as
 `404`, the moved page in its old chapter. So the endpoint does not sync inside the request:
@@ -95,11 +98,20 @@ BookStack 25.07.3): the new page as a draft with the title "New Page", the new c
 3. If a new item is not there yet (after `page_create`, `chapter_create` or `book_create`
    the API answers `404`, or a page that BookStack reported as published still reads as a
    draft), the job is repeated after 3, 6 and 12 seconds (`RETRY_DELAYS`), then given up on
-   with a `Webhook job … gave up` warning in the log. Any other event is read once: an item
-   that already existed and cannot be read is deleted or hidden from the token's user. A
-   `gave up` warning is therefore also what a page looks like that the token's user may not
-   see (restricted pages stay out of the index on purpose), so the warning alone is not a
-   fault.
+   with a `Webhook job … gave up` warning in the log. Every event is repeated on the same
+   schedule while BookStack does not answer (refused connection, timeout, `429` or `5xx`),
+   for instance because it is restarting, and that includes a book or chapter whose own
+   read worked but one of whose pages failed that way. A request that hangs until the
+   30-second timeout makes each attempt that much longer, and the jobs behind it wait.
+   Otherwise any other event is read once: an item that already existed and that
+   BookStack refuses (`404`) is deleted or hidden from the token's user. A `gave up`
+   warning is therefore also what a page looks like that the token's user may not see
+   (restricted pages stay out of the index on purpose), so the warning alone is not a
+   fault. A page job uses the URL of the latest page event for that page, so a retried
+   older job cannot bring back the URL from before a page move or rename. A book renamed
+   or a chapter moved to another book changes its pages' URLs without a page event; a
+   page job retried after that can still store the old URL until the page's next event
+   or the next full resync.
 4. `recycle_bin_restore` names no item and arrives before the restore happens, so its job
    walks the whole wiki after `RESTORE_DELAY_SECONDS` (5 s), without pruning. The walk is
    repeated only if no book could be read at all; items that fail to load are logged and
@@ -145,7 +157,8 @@ BookStack webhook  ──HTTP POST──►  chatbot /webhook/bookstack
                200 {"status":"processed"}             │
                                                        ▼  worker, 2 s later
                                           GET BookStack API for the item
-                                          not visible yet? retry after 3, 6, 12 s
+                                          not visible yet, or no answer?
+                                          retry after 3, 6, 12 s
                                                        │
                                                        ▼
                                           Upsert into bookstack_content, replace chunks
@@ -172,7 +185,9 @@ queue a 503.
 ### Webhook arrives, index does not change
 
 The endpoint answers `queued` in this case too, so the log is the only witness: look for
-`Webhook job … gave up` and for `BookStack API error` lines.
+`Webhook job … gave up`, `BookStack API error` (BookStack refused an item, for instance
+with `401` or `404`, or answered without JSON because `BOOKSTACK_API_URL` points
+elsewhere) and `Error syncing` lines (BookStack did not answer).
 
 - The BookStack API token in `.env` is missing or invalid: the chatbot receives the
   event but cannot fetch the page back. Regenerate the token, put it into `.env` and recreate

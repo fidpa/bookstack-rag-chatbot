@@ -160,13 +160,67 @@ def test_a_refused_token_raises_for_the_book_list(client, monkeypatch):
         client.get_all_books()
 
 
+class Status:
+    """A response with an error status, as requests builds it."""
+
+    def __init__(self, code):
+        self.status_code = code
+
+    def raise_for_status(self):
+        raise requests.exceptions.HTTPError(f"{self.status_code} Error", response=self)
+
+
 @pytest.mark.parametrize("getter", ["get_book", "get_chapter", "get_page"])
-def test_a_failed_single_read_returns_none(client, monkeypatch, getter):
+@pytest.mark.parametrize("code", [403, 404])
+def test_an_item_bookstack_refuses_reads_as_none(client, monkeypatch, getter, code):
+    monkeypatch.setattr(client.session, "request", lambda *a, **k: Status(code))
+    assert getattr(client, getter)(1) is None
+
+
+@pytest.mark.parametrize("getter", ["get_book", "get_chapter", "get_page"])
+def test_an_unreachable_bookstack_raises_for_a_single_item(client, monkeypatch, getter):
+    # A caller must be able to tell "cannot be read" from "try again later".
     def refuse(*args, **kwargs):
         raise requests.exceptions.ConnectionError("refused")
 
     monkeypatch.setattr(client.session, "request", refuse)
-    assert getattr(client, getter)(1) is None
+    with pytest.raises(BookStackAPIError) as raised:
+        getattr(client, getter)(1)
+    assert raised.value.status is None and raised.value.transient
+
+
+@pytest.mark.parametrize(
+    "code, transient",
+    [(404, False), (429, True), (499, False), (500, True), (503, True)],
+)
+def test_the_error_carries_the_status(client, monkeypatch, code, transient):
+    monkeypatch.setattr(client.session, "request", lambda *a, **k: Status(code))
+    with pytest.raises(BookStackAPIError) as raised:
+        client.get_all_books()
+    assert raised.value.status == code
+    assert raised.value.transient is transient
+
+
+class NotJson:
+    """A success status with a body that is not JSON, as from a login page."""
+
+    status_code = 200
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        raise requests.exceptions.JSONDecodeError("Expecting value", "<html>", 0)
+
+
+def test_an_answer_without_json_is_not_worth_asking_again(client, monkeypatch):
+    # A wrong BOOKSTACK_API_URL answers 200 with HTML. Regression: that counted as
+    # "BookStack does not answer" and was retried.
+    monkeypatch.setattr(client.session, "request", lambda *a, **k: NotJson())
+    with pytest.raises(BookStackAPIError) as raised:
+        client.get_all_books()
+    assert raised.value.status == 200 and not raised.value.transient
+    assert client.get_page(1) is None
 
 
 def test_requests_carry_a_timeout_and_the_token(client, monkeypatch):

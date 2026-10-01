@@ -8,6 +8,7 @@ import time
 import pytest
 
 import bookstack.api_client
+from bookstack.api_client import BookStackAPIError
 from bookstack import webhooks
 
 
@@ -18,6 +19,8 @@ def client(db_path, fake_bookstack, monkeypatch):
     monkeypatch.setattr(webhooks, "SYNC_DELAY_SECONDS", 0.0)
     monkeypatch.setattr(webhooks, "RESTORE_DELAY_SECONDS", 0.0)
     monkeypatch.setattr(webhooks, "RETRY_DELAYS", (0.01, 0.01, 0.01))
+    # Page URLs remembered from another test's events
+    webhooks._latest_url.clear()
     from app import create_app
 
     yield create_app().test_client()
@@ -135,6 +138,126 @@ def test_an_existing_page_that_cannot_be_read_is_not_retried(
     assert len(reads) == 1
 
 
+def test_giving_up_does_not_blame_a_restriction_it_cannot_know(
+    client, fake_bookstack, caplog
+):
+    # The same path handles a refused token (401) and a failed write; the warning
+    # must not claim the item was deleted or restricted.
+    fake_bookstack.get_page = lambda page_id: None
+    post(client, payload("page_update", 2))
+    assert "page 2 could not be read or stored" in caplog.text
+    assert "401" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "event, getter",
+    [
+        ("chapter_update", "get_chapter"),
+        ("book_update", "get_book"),
+        ("book_sort", "get_book"),
+    ],
+)
+def test_a_book_or_chapter_is_retried_while_bookstack_does_not_answer(
+    client, db, fake_bookstack, event, getter
+):
+    real = getattr(fake_bookstack, getter)
+    reads = []
+
+    def unreachable_once(item_id):
+        reads.append(item_id)
+        if len(reads) == 1:
+            raise BookStackAPIError("Connection refused", status=None)
+        return real(item_id)
+
+    setattr(fake_bookstack, getter, unreachable_once)
+    post(client, payload(event, 1))
+    assert len(reads) == 2
+    assert "Leave" in titles(db)
+
+
+def test_a_book_is_retried_when_only_one_of_its_pages_got_no_answer(
+    client, db, fake_bookstack
+):
+    # The book reads fine, but BookStack stops answering before page 2. Regression:
+    # the job counted as done, and page 2 stayed as it was.
+    fake_bookstack.pages[2] = {**fake_bookstack.pages[2], "name": "Leave policy"}
+    real_get_page = fake_bookstack.get_page
+    reads = []
+
+    def get_page(page_id):
+        reads.append(page_id)
+        if page_id == 2 and reads.count(2) == 1:
+            raise BookStackAPIError("Connection refused", status=None)
+        return real_get_page(page_id)
+
+    fake_bookstack.get_page = get_page
+    post(client, payload("book_update", 1))
+    assert reads.count(2) == 2
+    assert "Leave policy" in titles(db)
+
+
+def test_a_retried_older_job_does_not_restore_an_old_url(
+    client, db, fake_bookstack, monkeypatch
+):
+    # page_update fails while BookStack restarts; the page is moved meanwhile and
+    # that event is synced first. Regression: the update's retry then stored the URL
+    # from its own, older payload.
+    monkeypatch.setattr(webhooks, "RETRY_DELAYS", (0.3, 0.3, 0.3))
+    real_get_page = fake_bookstack.get_page
+    down = threading.Event()
+    down.set()
+
+    def get_page(page_id):
+        if down.is_set():
+            raise BookStackAPIError("Connection refused", status=None)
+        return real_get_page(page_id)
+
+    fake_bookstack.get_page = get_page
+    old = "https://wiki.example.com/books/handbook/page/old-slug"
+    new = "https://wiki.example.com/books/handbook/page/new-slug"
+    client.post("/webhook/bookstack", json=payload("page_update", 2, url=old))
+    time.sleep(0.1)  # the update has failed once and waits for its retry
+    down.clear()
+    post(client, payload("page_move", 2, url=new))
+    url = db.execute(
+        "SELECT url FROM bookstack_content WHERE bookstack_id = 2 AND type = 'page'"
+    ).fetchone()[0]
+    assert url == new
+
+
+def test_an_event_without_url_does_not_inherit_an_older_one(client, db):
+    post(client, payload("page_update", 2, url="https://wiki.example.com/x/old"))
+    body = payload("page_update", 2)
+    del body["url"]
+    post(client, body)
+    url = db.execute(
+        "SELECT url FROM bookstack_content WHERE bookstack_id = 2 AND type = 'page'"
+    ).fetchone()[0]
+    assert url == "https://wiki.example.com/link/2"
+    post(client, payload("book_update", 1))  # books take their URL from the API
+    assert list(webhooks._latest_url) == []
+
+
+def test_an_update_is_retried_while_bookstack_does_not_answer(
+    client, db, fake_bookstack
+):
+    # Regression (found live): BookStack restarting two seconds after a page_update
+    # refused the read, and the edit stayed out of the index until a full resync.
+    real_get_page = fake_bookstack.get_page
+    reads = []
+
+    def get_page(page_id):
+        reads.append(page_id)
+        if len(reads) < 3:
+            raise BookStackAPIError("Connection refused", status=None)
+        return real_get_page(page_id)
+
+    fake_bookstack.get_page = get_page
+    post(client, payload("page_update", 2))
+    assert len(reads) == 3
+    assert titles(db) == ["Leave"]
+
+
 def test_missing_item_id_is_rejected(client):
     r = client.post(
         "/webhook/bookstack",
@@ -223,6 +346,24 @@ def test_a_new_chapter_that_is_not_found_yet_is_indexed_on_a_retry(
     post(client, payload("chapter_create", 1, book_id=1))
     assert len(reads) == 2
     assert "HR" in titles(db)
+
+
+def test_a_new_book_that_is_not_found_yet_is_indexed_on_a_retry(
+    client, db, fake_bookstack
+):
+    # BookStack sends book_create from inside its transaction as well
+    # (BookRepo::create), so the first read can miss the new book.
+    book = fake_bookstack.books[1]
+    reads = []
+
+    def get_book(book_id):
+        reads.append(book_id)
+        return None if len(reads) < 2 else book
+
+    fake_bookstack.get_book = get_book
+    post(client, payload("book_create", 1))
+    assert len(reads) == 2
+    assert "Handbook" in titles(db)
 
 
 def test_a_new_page_is_retried_even_when_a_book_with_its_id_is_indexed(
