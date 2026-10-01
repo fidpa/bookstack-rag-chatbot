@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 
 from bookstack import sync_service
+from bookstack.api_client import BookStackAPIError
 from bookstack.sync_service import ContentSyncService, ensure_bookstack_schema
 from conftest import fts_integrity, fts_match
 
@@ -87,6 +88,26 @@ def test_prune_is_skipped_when_an_item_fails_to_load(sync, db, fake_bookstack):
     stats = sync.sync_all()
     assert stats["errors"] == 1 and stats["removed"] == 0
     assert (99, "page", "Kept") in rows(db)
+
+
+def test_a_failed_book_listing_is_an_error_and_prunes_nothing(
+    sync, db, fake_bookstack, monkeypatch
+):
+    # An unreachable BookStack must not look like an empty wiki.
+    sync.sync_all()
+
+    def refuse():
+        raise BookStackAPIError("API request failed: refused")
+
+    monkeypatch.setattr(fake_bookstack, "get_all_books", refuse)
+    stats = sync.sync_all()
+    assert stats["errors"] == 1 and stats["removed"] == 0
+    assert len(rows(db)) == 4
+
+
+def test_an_empty_wiki_is_not_an_error(sync, fake_bookstack):
+    fake_bookstack.books.clear()
+    assert sync.sync_all()["errors"] == 0
 
 
 def test_urls_come_from_contents_or_are_derived(sync, db):

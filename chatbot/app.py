@@ -55,7 +55,9 @@ def create_app() -> Flask:
 
     from startup_migrations import run_startup_migrations
 
-    run_startup_migrations()
+    # A failed setup does not stop the app (so /health stays reachable), but
+    # /health reports it, and with it the container's health check.
+    app.config["SCHEMA_OK"] = run_startup_migrations()
 
     # The widget sends no cookies, so credentials stay off.
     CORS(
@@ -88,6 +90,13 @@ def register_routes(app: Flask):
 
     @app.route("/health")
     def health():
+        if not app.config.get("SCHEMA_OK", True):
+            return {
+                "status": "unhealthy",
+                "app": "chatbot",
+                "version": __version__,
+                "reason": "database setup failed, see the log",
+            }, 503
         return {"status": "healthy", "app": "chatbot", "version": __version__}, 200
 
     @app.route("/debug")

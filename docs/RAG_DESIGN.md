@@ -98,7 +98,10 @@ carry no sentence punctuation; `clean_html_content()` in `sync_service.py` there
 turns block elements (`<p>`, `<li>`, `<tr>`, headings, `<br>`) into line breaks before
 stripping the tags. Units are packed into chunks up to the target size, and the last
 units of a chunk, up to the overlap, start the next one. A single unit longer than a
-whole chunk is cut into overlap-sized word windows, so no chunk exceeds the target.
+whole chunk is cut into overlap-sized word windows. A chunk stays close to the target but
+may exceed it: the units carried over as overlap come on top of the first unit of the next
+chunk, and a chunk below the minimum is merged into its successor up to 130 % of the
+target (in practice at most about 120 %, measured on random texts with the default sizes).
 
 Sentence-awareness matters because BM25 ranks token matches but humans read sentences. Splitting mid-sentence produces chunks where the most relevant token has lost its context.
 
@@ -239,7 +242,7 @@ briefly, and it does that from the titles; nothing checks that a citation appear
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Chatbot says "I don't know" for content that exists | The index is empty or stale: webhooks not set up, or a page still in `draft` | `docker compose exec chatbot python resync.py --dry-run` shows what the index holds; `--full-resync` fills it |
+| Chatbot says "I don't know" for content that exists | The index is empty or stale: webhooks not set up, or a page still in `draft` | `docker compose --env-file .env -f docker/docker-compose.yml exec chatbot python resync.py --dry-run` shows what the index holds; `--full-resync` fills it |
 | Off-topic answers, ignores sources | BM25 is matching weak signals across many strategies | Reduce chunk size, or narrow the system prompt |
 | Hallucinated facts | System prompt didn't override the LLM's training | Make prompt stricter: "Answer ONLY from sources. Refuse otherwise." |
 | Very slow responses (>5 s) | LLM provider is rate-limited or far away | Switch provider, or pick a smaller deployment |

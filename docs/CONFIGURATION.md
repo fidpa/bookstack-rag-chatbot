@@ -39,8 +39,9 @@ service is available.
 | `BOOKSTACK_EXTERNAL_URL` | Yes | `http://localhost:6875` | Public URL of BookStack, as browsers see it. Its origin is the allowed CORS origin of the widget API and the only origin `/chat/widget` accepts page context from; `/` redirects to it; page links in the index are built on it when the API does not return one. |
 | `BOOKSTACK_PORT` | No | `6875` | Host port that BookStack is published on. |
 | `BOOKSTACK_APP_KEY` | Yes (BookStack) | none | BookStack's APP_KEY. Generate once and pin. See `.env.example` for the command. |
-| `BOOKSTACK_TOKEN_ID` | Yes | none | BookStack API token ID. Create in BookStack: My Account → API Tokens. |
+| `BOOKSTACK_TOKEN_ID` | Yes | none | BookStack API token ID. Create in BookStack: Settings → Users → (the token's user) → API Tokens, or My Account → Access & Security → API Tokens for your own account. |
 | `BOOKSTACK_TOKEN_SECRET` | Yes | none | BookStack API token secret. Shown only once at creation time. |
+| `SAMPLES_TOKEN_ID`, `SAMPLES_TOKEN_SECRET` | No | empty | Read by `samples/load-samples.py` only, never by the container. The loader creates a book and pages, which the chatbot's read-only token may not; with these empty it falls back to `BOOKSTACK_TOKEN_*`. Use an admin's token and delete it after loading. |
 | `BOOKSTACK_WEBHOOK_SECRET` | No | empty | Setting it turns on the HMAC-SHA256 check in `chatbot/bookstack/webhooks.py`, which then **requires** an `X-BookStack-Signature` header. BookStack v25.07 does not send one, so against stock BookStack this makes every delivery fail with 401. Leave empty. |
 
 ## Database (MariaDB for BookStack)
@@ -55,6 +56,7 @@ service is available.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `CHATBOT_PORT` | No | `8888` | Host port for the chatbot's HTTP API. |
+| `CHATBOT_BIND` | No | `127.0.0.1` | Host address that port is published on. Loopback keeps the chatbot unreachable from the network, which is what `TRUSTED_PROXY_HOPS=1` requires behind a proxy; set `0.0.0.0` only if clients must reach it directly (that publishes on IPv4 only). Up to v0.3.0 the port was always published on all interfaces. |
 | `CHATBOT_SYSTEM_PROMPT` | No | see below | Replaces the widget's default system prompt wholesale. Empty or unset means the default, `DEFAULT_SYSTEM_PROMPT` in `chatbot/chat/widget_service.py`, which tells the model to use both sources, cite them briefly, say so when the sources do not answer, and reply in the user's language. |
 | `DATABASE_PATH` | No | `/app/data/chatbot.db` in the container | SQLite file. Without it, every component falls back to `chatbot/data/chatbot.db` next to the code (`utils/database.get_db_path()`). `resync.py`, `kb_admin.py` and `init_kb_schema.py` read the same variable. Uploaded files are stored in `knowledge_base/` next to it. |
 | `BOOKSTACK_API_URL` | No | `http://bookstack:80` | Where the chatbot reaches the BookStack API. Set in `docker-compose.yml` to the Docker-internal hostname. |
@@ -79,6 +81,10 @@ These knobs live in Python, not env vars. Edit the listed file to change.
 | `ChunkingService.DEFAULTS` | `chunk_size` 1000, `overlap` 200, `min_size` 100 (words) | `chatbot/documents/knowledge_base/services/chunking.py` | Chunking of uploaded documents. Both use `chatbot/utils/text_chunking.py`. |
 | `ContextService.MAX_CONTEXT_DOCS` | `3` | `chatbot/documents/knowledge_base/services/context.py` | Documents (wiki items or uploads) that contribute excerpts, up to three excerpts each. |
 | `ChatContextBuilder.PAGE_CONTEXT_CHARS` | `20000` | `chatbot/chat/context_builder.py` | Characters of the page the visitor is on that go into the prompt. |
+| `ChatContextBuilder.MAX_TITLE_CHARS`, `MAX_URL_CHARS` | `300`, `2000` | `chatbot/chat/context_builder.py` | Longest page title and URL taken from the widget's context. |
+| `SYNC_DELAY_SECONDS`, `RETRY_DELAYS`, `RESTORE_DELAY_SECONDS` | `2.0`, `(3.0, 6.0, 12.0)`, `5.0` | `chatbot/bookstack/webhooks.py` | When a queued webhook is synced, how often a create event (or a recycle-bin walk that could not list the books) is retried, in seconds after the previous attempt, and how long a recycle-bin restore waits. |
+| `WebhookWorker(max_pending=…)` | `500` | `chatbot/bookstack/webhook_worker.py` | Webhook jobs that may wait at once; more are answered with `503`. |
+| `MAX_MESSAGE_CHARS` | `2000` | `chatbot/chat/widget_service.py` | Longest question the widget API accepts; longer ones get `400`. |
 | `SYNONYMS` | empty | `chatbot/documents/knowledge_base/services/query_processor/constants.py` | Query expansion per keyword, for your wiki's vocabulary. |
 | `Config.MAX_CONTENT_LENGTH` | `16 MB` | `chatbot/config.py` | Flask's request-body cap. |
 | `ALLOWED_EXTENSIONS` | `.pdf .docx .txt .md .markdown` | `chatbot/documents/knowledge_base/validators.py` | Upload types `kb_admin.py` accepts: the ones text can be extracted from. |
@@ -108,7 +114,7 @@ DEFAULTS = {'chunk_size': 1200, 'overlap': 200, 'min_size': 100}
 After changing the wiki chunking, rebuild the BookStack index:
 
 ```bash
-docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+docker compose --env-file .env -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
 ```
 
 After changing the upload chunking, reindex the uploads:

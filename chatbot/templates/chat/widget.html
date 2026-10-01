@@ -213,6 +213,7 @@
                     id="chatInput" 
                     placeholder="Ihre Frage eingeben..."
                     autocomplete="off"
+                    maxlength="2000"
                 >
                 <button class="send-button" id="sendButton">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -335,6 +336,13 @@
                 hideTyping();
                 
                 if (!response.ok) {
+                    // The API says what was wrong with the request (a question that is
+                    // too long, an empty one); only a bare status means it is unreachable.
+                    const detail = await response.json().catch(() => ({}));
+                    if (detail && detail.error) {
+                        addMessage('Sorry, something went wrong: ' + detail.error);
+                        return;
+                    }
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 

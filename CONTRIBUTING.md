@@ -24,7 +24,7 @@ pip install ruff black mypy
 cp .env.example .env
 # Edit .env: set at minimum BOOKSTACK_DB_PASSWORD, MYSQL_ROOT_PASSWORD, SECRET_KEY,
 # and one LLM provider (AZURE_OPENAI_API_KEY or ENABLE_OLLAMA_FALLBACK=true)
-docker compose -f docker/docker-compose.yml up -d
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 ## Code Style

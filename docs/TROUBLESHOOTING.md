@@ -16,12 +16,12 @@ Symptom → likely cause → fix. Common issues first.
 ### "The widget opens but every message fails"
 
 ```bash
-docker compose -f docker/docker-compose.yml logs chatbot --tail 50
+docker compose --env-file .env -f docker/docker-compose.yml logs chatbot --tail 50
 ```
 
 Look for:
 
-- `Denied <ip> (not in ALLOWED_VPN_IPS)` → your client IP is not on the allow-list. Add it, restart `chatbot`. If `<ip>` is your reverse proxy's address for every visitor, set `TRUSTED_PROXY_HOPS=1`.
+- `Denied <ip> (not in ALLOWED_VPN_IPS)` → your client IP is not on the allow-list. Add it to `ALLOWED_VPN_IPS` and recreate the container (`docker compose --env-file .env -f docker/docker-compose.yml up -d chatbot`; a plain `restart` keeps the old environment). If `<ip>` is your reverse proxy's address for every visitor, set `TRUSTED_PROXY_HOPS=1`.
 - `ALLOWED_VPN_IPS is set but contains no valid CIDRs - denying all requests` → a typo in the list. Every request is refused until it parses.
 - `Azure OpenAI not configured and Ollama fallback is disabled` → no provider in `.env`; the widget answers "no AI service is currently available". Set `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT`, or `ENABLE_OLLAMA_FALLBACK=true`.
 - `Rate limit exceeded for IP` → you hit `RATE_LIMIT_PER_MINUTE`. Wait 60 s or raise the limit.
@@ -49,7 +49,7 @@ Three common causes:
 This is BookStack's "I can't reach my database" screen.
 
 ```bash
-docker compose -f docker/docker-compose.yml logs bookstack_db
+docker compose --env-file .env -f docker/docker-compose.yml logs bookstack_db
 ```
 
 Common fixes:
@@ -62,7 +62,7 @@ Common fixes:
 The default `linuxserver/bookstack` image runs `php artisan migrate` on first boot. On slow disks (e.g. SD cards) this can time out.
 
 ```bash
-docker compose -f docker/docker-compose.yml restart bookstack
+docker compose --env-file .env -f docker/docker-compose.yml restart bookstack
 # Wait 60 seconds, then refresh the browser.
 ```
 
@@ -70,20 +70,20 @@ docker compose -f docker/docker-compose.yml restart bookstack
 
 - Tokens are case-sensitive. Re-copy them.
 - Make sure you copied **both** the ID and the secret (they look similar).
-- Token expired? Check expiry in BookStack: My Account → API Tokens.
+- Token expired? Check expiry in BookStack: Settings → Users → (the token's user) → API Tokens.
 
 ## Chatbot Backend
 
-### "Healthcheck failing, `chatbot` keeps restarting"
+### "`chatbot` is unhealthy, or answers every request with an error"
 
 ```bash
-docker compose -f docker/docker-compose.yml logs chatbot --tail 100
+docker compose --env-file .env -f docker/docker-compose.yml logs chatbot --tail 100
 ```
 
 Typical causes:
 
 - A missing env var will **not** stop it. `SECRET_KEY` falls back to a built-in literal and `ALLOWED_VPN_IPS` falls back to allowing everything, both silently; look for the startup warnings rather than a crash.
-- Database file permissions: `Schema setup failed for /app/data/chatbot.db: unable to open database file`. The container runs as `1000:1000`. The image's `/app/data` belongs to that user since v0.3.0, so a fresh `chatbot_data` volume is writable; a volume created by an older image stays root-owned. Fix it once with `docker compose -f docker/docker-compose.yml run --rm --user root chatbot chown -R 1000:1000 /app/data`.
+- Database file permissions: the log says `Schema setup failed for /app/data/chatbot.db: attempt to write a readonly database` (the database file exists, as after an upgrade) or `… unable to open database file` (there is no file yet), and `/health` answers `503` with `"status": "unhealthy"`, so `docker compose ps` shows the container as unhealthy. The container runs as `1000:1000`. The image's `/app/data` belongs to that user since v0.3.0, so a fresh `chatbot_data` volume is writable; a volume created by an older image stays root-owned. Fix it once with `docker compose --env-file .env -f docker/docker-compose.yml run --rm --user root chatbot chown -R 1000:1000 /app/data`, then `docker compose --env-file .env -f docker/docker-compose.yml restart chatbot`: the database is set up only when the app starts, and `up -d` leaves a running container alone when its configuration has not changed. Do not run `kb_admin.py` as root against the volume's files: the `-wal` and `-shm` files it creates would be root-owned and lock the container out again.
 - Out of memory. Raise `deploy.resources.limits.memory` for the `chatbot` service in `docker/docker-compose.yml`; it is 4 GB by default.
 
 ### "SQLite database is locked"
@@ -92,9 +92,9 @@ This happens if you run the admin CLI on the host while the container is also wr
 
 ```bash
 # Stop the container, then run the CLI, then start it again
-docker compose -f docker/docker-compose.yml stop chatbot
+docker compose --env-file .env -f docker/docker-compose.yml stop chatbot
 python3 scripts/kb_admin.py bulk reindex --force
-docker compose -f docker/docker-compose.yml start chatbot
+docker compose --env-file .env -f docker/docker-compose.yml start chatbot
 ```
 
 For ad-hoc reads (`documents list`, `index status`, `maintenance health-check`) the lock
@@ -150,22 +150,31 @@ run large rebuilds outside working hours because the writer lock is held through
 If you've tried everything and the stack is broken in inscrutable ways:
 
 ```bash
-# Save your wiki content first!
-docker compose -f docker/docker-compose.yml exec bookstack_db \
-  mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" bookstackapp > bookstack-backup.sql
+# Save your wiki content first. The password is expanded inside the container
+# (single quotes), where the compose file has set MYSQL_PASSWORD.
+docker compose --env-file .env -f docker/docker-compose.yml exec -T bookstack_db \
+  sh -c 'mariadb-dump -u bookstack -p"$MYSQL_PASSWORD" bookstackapp' > bookstack-backup.sql
+
+# Do not go on unless the dump holds your content
+grep -c 'INSERT INTO' bookstack-backup.sql
 
 # Now nuke and reboot
-docker compose -f docker/docker-compose.yml down -v
-docker compose -f docker/docker-compose.yml up -d
+docker compose --env-file .env -f docker/docker-compose.yml down -v
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 
 # Restore BookStack (re-run setup, then restore DB)
 ```
 
+The dump holds BookStack's database only. Uploaded images and attachments live in the
+`bookstack_data` volume, which `down -v` deletes as well; copy them out first if you need
+them. Do not dump as `root`: in the MariaDB image `root` signs in from inside the container
+without a password, so `-u root -p"$MYSQL_ROOT_PASSWORD"` is refused and leaves an empty file.
+
 If the issue persists with a fresh stack, open a GitHub Issue with the output of:
 
 ```bash
-docker compose -f docker/docker-compose.yml ps
-docker compose -f docker/docker-compose.yml logs --tail 200 > debug.log
+docker compose --env-file .env -f docker/docker-compose.yml ps
+docker compose --env-file .env -f docker/docker-compose.yml logs --tail 200 > debug.log
 ```
 
 and attach `debug.log` (after redacting any secrets that may have leaked into it).

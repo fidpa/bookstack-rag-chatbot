@@ -14,7 +14,7 @@ Navigation hub for the `bookstack-rag-chatbot` docs. Files are organised loosely
 | Document | What it covers |
 |---|---|
 | [KB_ADMIN_CLI.md](KB_ADMIN_CLI.md) | Knowledge-base admin CLI: the five subcommand groups quoted from `--help`, and how to run it on the host |
-| [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md) | The 13 BookStack webhook events, what each does to the index, and the full resync that repairs a drifted one |
+| [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md) | The 14 BookStack webhook events, what each does to the index, and the full resync that repairs a drifted one |
 
 ## Explanation
 

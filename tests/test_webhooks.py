@@ -2,6 +2,8 @@
 
 import hashlib
 import hmac
+import threading
+import time
 
 import pytest
 
@@ -12,19 +14,35 @@ from bookstack import webhooks
 @pytest.fixture
 def client(db_path, fake_bookstack, monkeypatch):
     monkeypatch.setattr(bookstack.api_client, "_client_instance", fake_bookstack)
+    # The real delays are seconds; the tests only need the order of events.
+    monkeypatch.setattr(webhooks, "SYNC_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(webhooks, "RESTORE_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(webhooks, "RETRY_DELAYS", (0.01, 0.01, 0.01))
     from app import create_app
 
-    return create_app().test_client()
+    yield create_app().test_client()
+    assert webhooks.worker.wait_idle(5), "a webhook job outlived its test"
 
 
-def payload(event, item_id, **item):
-    """BookStack's WebhookFormatter output, reduced to what the handler reads."""
+def payload(event, item_id, url=None, **item):
+    """BookStack's WebhookFormatter output, reduced to what the handler reads.
+
+    `url` is the item's own URL, as BookStack builds it from the slugs: it is
+    deliberately not the /link/{id} permalink the sync falls back to.
+    """
     return {
         "event": event,
         "text": f"Someone did {event}",
-        "url": f"https://wiki.example.com/link/{item_id}",
+        "url": url or f"https://wiki.example.com/books/handbook/page/item-{item_id}",
         "related_item": {"id": item_id, **item},
     }
+
+
+def post(client, body, **kwargs):
+    """Send a webhook and wait until the worker has finished what it queued."""
+    response = client.post("/webhook/bookstack", json=body, **kwargs)
+    assert webhooks.worker.wait_idle(5)
+    return response
 
 
 def titles(db):
@@ -33,31 +51,88 @@ def titles(db):
 
 def test_page_update_indexes_the_page(client, db):
     # Regression: the handler read related.page.id; BookStack sends related_item.
-    r = client.post("/webhook/bookstack", json=payload("page_update", 2, book_id=1))
-    assert r.status_code == 200 and r.json["status"] == "processed"
+    r = post(client, payload("page_update", 2, book_id=1))
+    assert r.status_code == 202 and r.json["status"] == "queued"
     assert titles(db) == ["Leave"]
+
+
+def test_the_payload_url_becomes_the_page_link(client, db):
+    # The sync would fall back to https://wiki.example.com/link/2; the URL BookStack
+    # sends is the one with the slugs, and it is the better link.
+    url = "https://wiki.example.com/books/handbook/page/leave-policy"
+    post(client, payload("page_update", 2, url=url))
+    assert db.execute("SELECT url FROM bookstack_content").fetchone()[0] == url
+
+
+def test_a_page_without_a_payload_url_gets_the_permalink(client, db):
+    body = payload("page_update", 2)
+    del body["url"]
+    post(client, body)
     url = db.execute("SELECT url FROM bookstack_content").fetchone()[0]
     assert url == "https://wiki.example.com/link/2"
 
 
-def test_page_update_invalidates_parent_caches(client, fake_bookstack):
-    client.post(
-        "/webhook/bookstack", json=payload("page_update", 2, book_id=1, chapter_id=1)
-    )
-    assert {"page_2", "book_1", "chapter_1"} <= set(fake_bookstack.invalidated)
-
-
 def test_book_events_index_and_delete(client, db):
-    client.post("/webhook/bookstack", json=payload("book_update", 1))
+    post(client, payload("book_update", 1))
     assert titles(db) == ["HR", "Handbook", "Leave", "Setup"]
-    client.post("/webhook/bookstack", json=payload("book_delete", 1))
+    r = post(client, payload("book_delete", 1))
+    assert r.status_code == 200 and r.json["status"] == "processed"
     assert titles(db) == []
 
 
 def test_chapter_delete_removes_its_pages(client, db):
-    client.post("/webhook/bookstack", json=payload("book_update", 1))
-    client.post("/webhook/bookstack", json=payload("chapter_delete", 1))
+    post(client, payload("book_update", 1))
+    post(client, payload("chapter_delete", 1))
     assert titles(db) == ["Handbook", "Setup"]
+
+
+def test_deletions_are_applied_before_the_response(client, db, monkeypatch):
+    # Removing needs nothing from BookStack, so it must not wait for the worker.
+    post(client, payload("book_update", 1))
+    monkeypatch.setattr(webhooks, "SYNC_DELAY_SECONDS", 60.0)
+    client.post("/webhook/bookstack", json=payload("page_delete", 2))
+    assert "Leave" not in titles(db)
+    # Only the repeated removal is queued, and it is due at once (no sync delay)
+    assert webhooks.worker.wait_idle(5)
+    assert "Leave" not in titles(db)
+
+
+def test_a_page_deleted_while_a_job_reads_it_does_not_come_back(
+    client, db, fake_bookstack
+):
+    # A job reads page 2; before it stores it, BookStack deletes the page and the
+    # delete webhook removes it from the index. Regression: the job then wrote the
+    # page back, and only a full resync took it out again.
+    post(client, payload("book_update", 1))
+    real_get_page = fake_bookstack.get_page
+
+    def get_page(page_id):
+        page = real_get_page(page_id)
+        if page_id == 2 and fake_bookstack.pages.pop(2, None):
+            r = client.post("/webhook/bookstack", json=payload("page_delete", 2))
+            assert r.status_code == 200
+        return page
+
+    fake_bookstack.get_page = get_page
+    post(client, payload("page_update", 2))
+    assert "Leave" not in titles(db)
+
+
+def test_an_existing_page_that_cannot_be_read_is_not_retried(
+    client, db, fake_bookstack
+):
+    # Only a new item can still be invisible because BookStack has not committed.
+    # An existing one that reads as 404 is gone or hidden from the token's user.
+    reads = []
+
+    def get_page(page_id):
+        reads.append(page_id)
+        return None
+
+    fake_bookstack.get_page = get_page
+    r = post(client, payload("page_update", 2))
+    assert r.status_code == 202
+    assert len(reads) == 1
 
 
 def test_missing_item_id_is_rejected(client):
@@ -85,4 +160,204 @@ def test_signature_is_enforced_when_a_secret_is_set(client, monkeypatch):
         content_type="application/json",
         headers={"X-BookStack-Signature": signature},
     )
-    assert r.status_code == 200
+    assert r.status_code == 202
+    assert webhooks.worker.wait_idle(5)
+
+
+# --- BookStack sends create, move and sort events before its own commit ------------
+# Live against BookStack 25.07.3, a receiver that reads the item back inside the
+# webhook gets the draft for page_create, a 404 for chapter_create and the old parent
+# for page_move. These tests script exactly that.
+
+
+def test_the_response_does_not_wait_for_the_sync(client, db, fake_bookstack):
+    release = threading.Event()
+    real_get_page = fake_bookstack.get_page
+
+    def slow(page_id):
+        release.wait(5)
+        return real_get_page(page_id)
+
+    fake_bookstack.get_page = slow
+    started = time.monotonic()
+    r = client.post("/webhook/bookstack", json=payload("page_create", 2))
+    assert r.status_code == 202 and time.monotonic() - started < 1.0
+    assert titles(db) == []  # the worker is still waiting for BookStack
+    release.set()
+    assert webhooks.worker.wait_idle(5)
+    assert titles(db) == ["Leave"]
+
+
+def test_a_new_page_that_still_reads_as_a_draft_is_indexed_on_a_retry(
+    client, db, fake_bookstack
+):
+    published = fake_bookstack.pages[2]
+    reads = []
+
+    def get_page(page_id):
+        reads.append(page_id)
+        # BookStack has not committed yet on the first two reads
+        return (
+            {**published, "draft": True, "name": "New Page"}
+            if len(reads) < 3
+            else published
+        )
+
+    fake_bookstack.get_page = get_page
+    post(client, payload("page_create", 2, book_id=1, draft=False))
+    assert len(reads) == 3
+    assert titles(db) == ["Leave"]
+
+
+def test_a_new_chapter_that_is_not_found_yet_is_indexed_on_a_retry(
+    client, db, fake_bookstack
+):
+    chapter = fake_bookstack.chapters[1]
+    reads = []
+
+    def get_chapter(chapter_id):
+        reads.append(chapter_id)
+        return None if len(reads) < 2 else chapter
+
+    fake_bookstack.get_chapter = get_chapter
+    post(client, payload("chapter_create", 1, book_id=1))
+    assert len(reads) == 2
+    assert "HR" in titles(db)
+
+
+def test_a_new_page_is_retried_even_when_a_book_with_its_id_is_indexed(
+    client, db, fake_bookstack, sync
+):
+    # BookStack numbers books, chapters and pages separately, so page 1 sits next to
+    # book 1 and chapter 1. Whether the new page is indexed yet must be asked for the
+    # page, not for any row with that id.
+    sync.sync_book(1)
+    db.execute("DELETE FROM bookstack_content WHERE type = 'page'")
+    db.commit()
+    published = fake_bookstack.pages[1]
+    reads = []
+
+    def get_page(page_id):
+        reads.append(page_id)
+        return {**published, "draft": True} if len(reads) < 2 else published
+
+    fake_bookstack.get_page = get_page
+    post(client, payload("page_create", 1, draft=False))
+    assert len(reads) == 2
+    assert "Setup" in titles(db)
+
+
+def test_a_moved_page_is_indexed_under_its_new_chapter(client, db, fake_bookstack):
+    post(client, payload("book_update", 1))
+    fake_bookstack.pages[1]["chapter_id"] = 1  # the page moves into chapter 1
+    post(client, payload("page_move", 1, book_id=1, chapter_id=1))
+    chapter = db.execute(
+        "SELECT chapter_id FROM bookstack_content WHERE bookstack_id = 1 AND type = 'page'"
+    ).fetchone()[0]
+    assert chapter == 1
+
+
+def test_a_real_draft_is_not_retried(client, db, fake_bookstack):
+    reads = []
+    draft = {**fake_bookstack.pages[2], "draft": True}
+
+    def get_page(page_id):
+        reads.append(page_id)
+        return draft
+
+    fake_bookstack.get_page = get_page
+    post(client, payload("page_update", 2, draft=True))
+    assert len(reads) == 1
+    assert titles(db) == []
+
+
+def test_it_gives_up_after_the_last_attempt(client, db, fake_bookstack, caplog):
+    reads = []
+
+    def get_page(page_id):
+        reads.append(page_id)
+        return None
+
+    fake_bookstack.get_page = get_page
+    r = post(client, payload("page_create", 2))
+    assert r.status_code == 202
+    assert len(reads) == 1 + len(webhooks.RETRY_DELAYS)
+    assert "gave up" in caplog.text
+    assert titles(db) == []
+
+
+def test_restoring_from_the_recycle_bin_walks_the_wiki_without_pruning(
+    client, db, sync
+):
+    # The event names no item. Regression: it was ignored, so a restored page,
+    # chapter or book stayed out of the index.
+    sync._store_content(
+        99, "page", "Stray", "text", "", 1, None, []
+    )  # not in BookStack
+    r = post(
+        client, {"event": "recycle_bin_restore", "url": "https://wiki.example.com/x"}
+    )
+    assert r.status_code == 202 and r.json["status"] == "queued"
+    assert titles(db) == ["HR", "Handbook", "Leave", "Setup", "Stray"]
+
+
+def test_a_restore_walk_is_not_repeated_for_one_item_that_fails(
+    client, db, fake_bookstack, caplog
+):
+    # Walking the whole wiki again would hold up every other webhook; the item is
+    # left to the next full resync.
+    books = []
+    real_get_book = fake_bookstack.get_book
+
+    def get_book(book_id):
+        books.append(book_id)
+        return real_get_book(book_id)
+
+    fake_bookstack.get_book = get_book
+    del fake_bookstack.pages[2]  # listed in the chapter, but cannot be read
+    post(client, {"event": "recycle_bin_restore", "url": "https://wiki.example.com/x"})
+    assert books == [1]
+    assert "Setup" in titles(db)
+    assert "failed to load" in caplog.text
+
+
+def test_a_restore_walk_is_repeated_when_bookstack_cannot_list_the_books(
+    client, db, fake_bookstack
+):
+    real_get_all_books = fake_bookstack.get_all_books
+    calls = []
+
+    def get_all_books():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("BookStack is restarting")
+        return real_get_all_books()
+
+    fake_bookstack.get_all_books = get_all_books
+    post(client, {"event": "recycle_bin_restore", "url": "https://wiki.example.com/x"})
+    assert len(calls) == 2
+    assert "Leave" in titles(db)
+
+
+def test_a_full_queue_refuses_the_event_with_503(client, monkeypatch):
+    monkeypatch.setattr(webhooks, "SYNC_DELAY_SECONDS", 60.0)
+    monkeypatch.setattr(webhooks.worker, "_max_pending", 1)
+    assert (
+        client.post("/webhook/bookstack", json=payload("page_update", 1)).status_code
+        == 202
+    )
+    r = client.post("/webhook/bookstack", json=payload("page_update", 2))
+    assert r.status_code == 503
+    # deletions do not use the queue and still go through
+    assert (
+        client.post("/webhook/bookstack", json=payload("page_delete", 1)).status_code
+        == 200
+    )
+    with webhooks.worker._cv:  # do not wait a minute for the job that was queued
+        webhooks.worker._heap.clear()
+        webhooks.worker._pending = 0
+
+
+def test_the_test_endpoint_lists_the_accepted_events(client):
+    accepted = client.get("/webhook/bookstack/test").json["accepts"]
+    assert "recycle_bin_restore" in accepted and len(accepted) == 14

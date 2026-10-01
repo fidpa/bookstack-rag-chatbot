@@ -39,7 +39,18 @@ def widget_chat():
             return jsonify({"success": False, "error": "Message cannot be empty"}), 400
 
         # Import widget service
-        from ..widget_service import process_widget_message
+        from ..widget_service import MAX_MESSAGE_CHARS, process_widget_message
+
+        if len(message) > MAX_MESSAGE_CHARS:
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": f"Message too long (at most {MAX_MESSAGE_CHARS} characters)",
+                    }
+                ),
+                400,
+            )
 
         # Process message and generate response
         result = process_widget_message(

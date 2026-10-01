@@ -5,13 +5,19 @@
 #   bookstack_db  : MariaDB backend for BookStack
 #   chatbot       : Flask-based RAG backend (port 8888)
 #
-# Start: docker compose -f docker/docker-compose.yml up -d
-# Logs : docker compose -f docker/docker-compose.yml logs -f
-# Stop : docker compose -f docker/docker-compose.yml down
+# Run these from the repository root. --env-file is required: Compose reads
+# ".env" from the directory of the compose file (docker/), not from your shell's
+# working directory, so without it every variable below stays empty.
+#
+# Start: docker compose --env-file .env -f docker/docker-compose.yml up -d
+# Logs : docker compose --env-file .env -f docker/docker-compose.yml logs -f
+# Stop : docker compose --env-file .env -f docker/docker-compose.yml down
+#
+# After changing .env, run "up -d" again: "restart" keeps the old environment.
 
 services:
   bookstack:
-    image: lscr.io/linuxserver/bookstack:25.07
+    image: lscr.io/linuxserver/bookstack:25.07.3
     container_name: bookstack
     ports:
       - "${BOOKSTACK_PORT:-6875}:80"
@@ -44,7 +50,7 @@ services:
       - no-new-privileges:true
 
   bookstack_db:
-    image: lscr.io/linuxserver/mariadb:11.5
+    image: lscr.io/linuxserver/mariadb:11.4.9
     container_name: bookstack_db
     environment:
       - PUID=1000
@@ -60,7 +66,9 @@ services:
     networks:
       - bookstack-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      # The image lets root in from inside the container only without a
+      # password, so root with MYSQL_ROOT_PASSWORD was refused on every check.
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-u", "bookstack", "-p${BOOKSTACK_DB_PASSWORD}"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -74,7 +82,9 @@ services:
     container_name: chatbot
     user: "1000:1000"
     ports:
-      - "${CHATBOT_PORT:-8888}:8888"
+      # Loopback unless CHATBOT_BIND says otherwise: the allow-list and the rate
+      # limit trust the address of the connection (see TRUSTED_PROXY_HOPS)
+      - "${CHATBOT_BIND:-127.0.0.1}:${CHATBOT_PORT:-8888}:8888"
     networks:
       - bookstack-network
     volumes:

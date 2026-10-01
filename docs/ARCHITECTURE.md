@@ -95,7 +95,7 @@ There is no separate LLM reranking step today. The only LLM call is the final an
 
 The chatbot has no UI of its own. There is no login, no user database, and no admin web interface. This is deliberate:
 
-- BookStack already owns user identity. We trust whatever IP / session has been allowed past BookStack and the reverse proxy.
+- The chatbot does not know who is asking. It trusts whatever IP has been allowed past the allow-list and the reverse proxy, and it applies no BookStack permissions to its answers: the index holds what the API token's user can see.
 - One fewer login screen for users.
 - One fewer system to harden against authentication bugs.
 
@@ -106,15 +106,16 @@ public-internet deployment needs an auth proxy in front (nginx with OIDC, for ex
 
 ## Webhook-Driven Sync
 
-The chatbot listens on `/webhook/bookstack` for 13 events:
+The chatbot listens on `/webhook/bookstack` for 14 events:
 
 - `page_create`, `page_update`, `page_delete`, `page_move`, `page_restore`
 - `chapter_create`, `chapter_update`, `chapter_delete`, `chapter_move`
 - `book_create`, `book_update`, `book_delete`, `book_sort`
+- `recycle_bin_restore` (carries no item; the whole wiki is walked, without pruning)
 
 Bookshelf events are not among them: a bookshelf holds no content of its own, so there is nothing to index (see [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md)).
 
-When BookStack fires a webhook, the chatbot fetches the affected content via the BookStack API and updates its FTS5 index. There is no scheduled cron job; the index converges with BookStack on every edit, in the time one API fetch plus a re-chunk takes.
+When BookStack fires a webhook, the chatbot queues it, and a background thread fetches the affected content via the BookStack API about two seconds later and updates the FTS5 index; the delay is there because BookStack sends create, move and sort events before its own transaction has committed, and the thread tries again while the item is not visible yet. Deletions need nothing from BookStack and are applied immediately. There is no scheduled cron job; the index converges with BookStack within seconds of an edit.
 
 All three delete events remove content, chapters and books by the `book_id` and
 `chapter_id` columns the index records for every page. Where webhooks were missed

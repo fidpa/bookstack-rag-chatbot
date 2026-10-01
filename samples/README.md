@@ -16,17 +16,16 @@ All content is original and released into the **public domain (CC0)**. Companies
 
 ## Loading the samples
 
-After the stack is running and BookStack has been initialised (admin account created at `http://localhost:6875`), generate an API token (My Account → API Tokens → Create Token), put the credentials into `.env`, then load them into your shell and run the loader (it reads the process environment, not the file):
+After the stack is running and BookStack has been initialised (admin account created at `http://localhost:6875`), generate an API token for an admin (My Account → Access & Security → API Tokens → Create Token), put the credentials into `.env` as `SAMPLES_TOKEN_ID` and `SAMPLES_TOKEN_SECRET` (the chatbot's own `BOOKSTACK_TOKEN_*` should be read-only and cannot create pages; the loader falls back to it when the two are empty), then load them into your shell and run the loader (it reads the process environment, not the file):
 
 ```bash
-set -a; . ./.env; set +a
-python3 samples/load-samples.py
+(set -a; . ./.env; set +a; python3 samples/load-samples.py)
 ```
 
-The script creates one BookStack book called *Acme Inc. Knowledge Base* and uploads each Markdown file as a page. With the webhook set up ([docs/BOOKSTACK_WEBHOOKS.md](../docs/BOOKSTACK_WEBHOOKS.md)), the chatbot indexes each page as it is created. Without one, index them in one go:
+The script creates one BookStack book called *Acme Inc. Knowledge Base* and uploads each Markdown file as a page. With the webhook set up ([docs/BOOKSTACK_WEBHOOKS.md](../docs/BOOKSTACK_WEBHOOKS.md)), the chatbot indexes each page a few seconds after it is created. Without one, index them in one go:
 
 ```bash
-docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+docker compose --env-file .env -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
 ```
 
 ## Removing the samples

@@ -34,6 +34,7 @@ This project is designed to run **inside a trusted network** (LAN, VPN, or behin
 | Widget XSS (BookStack-page injection) | ✅ |
 | Prompt injection via document content | ⚠️ in scope, **not mitigated today** (see [docs/SECURITY.md](docs/SECURITY.md#prompt-injection-not-mitigated-today)) |
 | IP allow-list bypass via reverse-proxy headers | ✅ |
+| Reading content that BookStack restricts, through the chatbot | ⚠️ by design: the index holds what the token's user sees ([docs/SECURITY.md](docs/SECURITY.md#bookstack-permissions-do-not-apply-to-answers)) |
 | Rate-limit bypass | ✅ |
 | BookStack API token theft via misconfiguration | ✅ |
 | SQL injection in the admin CLI | ✅ |
@@ -47,6 +48,7 @@ This project is designed to run **inside a trusted network** (LAN, VPN, or behin
 These are documented design trade-offs, not vulnerabilities:
 
 - BookStack webhooks (as of v25.07) do not support HMAC signature validation — webhook authenticity is enforced via IP allow-list only.
+- The chatbot does not apply BookStack's per-role or per-page permissions to answers; it indexes what the API token's user can see. Use a dedicated read-only user for the token.
 - SQLite FTS5 is a single-writer database, and there is no storage interface to swap it behind: a PostgreSQL + `pgvector` backend means rewriting the knowledge-base services (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - The Ollama fallback is **disabled by default** to prevent accidental fallback to a non-hardened local model.
 
@@ -56,7 +58,7 @@ When deploying:
 
 - Terminate TLS at a reverse proxy (nginx, Caddy, Traefik) — the chatbot backend speaks plain HTTP on the Docker network.
 - Restrict `ALLOWED_VPN_IPS` to the narrowest CIDR that includes your users.
-- Behind a reverse proxy, set `TRUSTED_PROXY_HOPS=1` and do not publish port 8888 to clients.
+- Behind a reverse proxy, set `TRUSTED_PROXY_HOPS=1` and do not publish port 8888 to clients (`CHATBOT_BIND` defaults to `127.0.0.1`).
 - Rotate `BOOKSTACK_TOKEN_SECRET` and `SECRET_KEY` quarterly.
 - Mount the database volume read-only for any sidecar that does not need to write.
 - Keep `ENABLE_OLLAMA_FALLBACK=false` unless you have a hardened Ollama instance.

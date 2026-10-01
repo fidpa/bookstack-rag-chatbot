@@ -4,8 +4,10 @@
 Reads credentials from environment variables — typically sourced from `.env`:
 
     BOOKSTACK_EXTERNAL_URL   e.g. http://localhost:6875
-    BOOKSTACK_TOKEN_ID       BookStack API token id
-    BOOKSTACK_TOKEN_SECRET   BookStack API token secret
+    SAMPLES_TOKEN_ID         token of a user who may create books and pages
+    SAMPLES_TOKEN_SECRET     (an admin); used when set
+    BOOKSTACK_TOKEN_ID       otherwise the chatbot's own token, which is read-only
+    BOOKSTACK_TOKEN_SECRET   when set up as docs/SETUP.md recommends
 
 Usage:
     python3 samples/load-samples.py            # create book + pages
@@ -44,10 +46,20 @@ def env(name: str) -> str:
     return value
 
 
+def token() -> tuple[str, str]:
+    """The token to write with: SAMPLES_TOKEN_* if set, else BOOKSTACK_TOKEN_*.
+
+    The chatbot's token belongs to a user who may only view content (docs/SETUP.md,
+    step 5), and that user cannot create the sample book.
+    """
+    if os.environ.get("SAMPLES_TOKEN_ID"):
+        return env("SAMPLES_TOKEN_ID"), env("SAMPLES_TOKEN_SECRET")
+    return env("BOOKSTACK_TOKEN_ID"), env("BOOKSTACK_TOKEN_SECRET")
+
+
 def make_session() -> tuple[requests.Session, str]:
     base_url = env("BOOKSTACK_EXTERNAL_URL").rstrip("/")
-    token_id = env("BOOKSTACK_TOKEN_ID")
-    token_secret = env("BOOKSTACK_TOKEN_SECRET")
+    token_id, token_secret = token()
 
     session = requests.Session()
     session.headers["Authorization"] = f"Token {token_id}:{token_secret}"
@@ -69,6 +81,12 @@ def create_book(session: requests.Session, base_url: str) -> dict:
         f"{base_url}/api/books",
         json={"name": BOOK_NAME, "description": BOOK_DESCRIPTION},
     )
+    if response.status_code in (401, 403):
+        sys.exit(
+            f"error: BookStack refused to create the book (HTTP {response.status_code}). "
+            "The chatbot's own token is meant to be read-only; set SAMPLES_TOKEN_ID "
+            "and SAMPLES_TOKEN_SECRET to an admin's token for this run."
+        )
     response.raise_for_status()
     return response.json()
 

@@ -54,6 +54,10 @@ class FakeBookStack:
     One book (id 1) holding a top-level page (id 1) and a chapter (id 1) with
     one page (id 2): the same numeric id for a book, a chapter and a page is
     the normal case in BookStack, which numbers each type separately.
+
+    The entries of `contents` carry `url`, `book_id` and `draft` like the real
+    `books-read` response, and a chapter entry embeds its pages. Whether the
+    real client's HTTP layer behaves the same is covered in test_api_client.py.
     """
 
     def __init__(self):
@@ -95,19 +99,24 @@ class FakeBookStack:
                     {
                         "type": "page",
                         "id": 1,
+                        "book_id": 1,
+                        "chapter_id": 0,
+                        "draft": False,
                         "url": "https://wiki.example.com/books/handbook/page/setup",
                     },
-                    {"type": "chapter", "id": 1},
+                    {
+                        "type": "chapter",
+                        "id": 1,
+                        "book_id": 1,
+                        "url": "https://wiki.example.com/books/handbook/chapter/hr",
+                        "pages": [{"id": 2, "book_id": 1, "chapter_id": 1}],
+                    },
                 ],
             }
         }
-        self.invalidated = []
-
-    def invalidate_cache(self, key=None):
-        self.invalidated.append(key)
 
     def get_all_books(self):
-        return [{"id": i} for i in self.books]
+        return [{"id": i, "name": b["name"]} for i, b in self.books.items()]
 
     def get_book(self, book_id):
         return self.books.get(book_id)

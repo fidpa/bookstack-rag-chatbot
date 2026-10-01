@@ -55,6 +55,24 @@ jobs:
       - name: pytest
         run: pytest -q
 
+  images:
+    name: Compose images exist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A tag that was never published (bookstack:25.07, mariadb:11.5) made
+      # "docker compose up" fail at the first pull, for every new installation.
+      - name: Every image tag in the compose file resolves
+        run: |
+          images=$(grep -E '^[[:space:]]+image:' \
+            docker/docker-compose.yml | awk '{print $2}')
+          test -n "$images"
+          for image in $images; do
+            echo "checking $image"
+            docker manifest inspect "$image" > /dev/null
+          done
+
   yaml:
     name: YAML (yamllint)
     runs-on: ubuntu-latest

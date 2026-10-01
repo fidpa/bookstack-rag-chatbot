@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01: New pages and moves reach the index, and the quickstart runs as written
+
+### Fixed
+- **New pages and chapters, moves and sorts reach the index.** BookStack sends
+  `page_create`, `chapter_create`, `page_move` and `book_sort` from inside the database
+  transaction that makes the change, and the handler read the item back inside the
+  request: it saw a new page as a draft, a new chapter as 404 and a moved page in its old
+  chapter. New content only reached the index with a later edit or a full resync. The
+  endpoint now answers at once, and a background worker
+  (`chatbot/bookstack/webhook_worker.py`) reads BookStack two seconds later, one job after
+  the other; a new item that is not visible yet is tried again after 3, 6 and 12 s.
+  Checked against BookStack 25.07.3: pages and chapters created through the API or the
+  editor were in the index after about 3 s, moves and sorts made in the UI after 3 to 5 s.
+- **Restoring from the recycle bin reaches the index.** A restore sends
+  `recycle_bin_restore`, not `page_restore`, and its payload names no item, so restored
+  content stayed out of the index until a full resync. The event is now handled: five
+  seconds later the whole wiki is walked without pruning (a restored page was back after
+  about 9 s against BookStack 25.07.3). The walk is repeated only if no book could be
+  read at all.
+- **A second book sort no longer works from stale data.** The API client cached books,
+  chapters and pages for five minutes. A `book_sort` within that window re-indexed a page
+  in the chapter it had just left, and a following `chapter_delete` removed the page from
+  the index. The cache is gone; every sync reads BookStack as it is.
+- **A full resync no longer reports success when BookStack cannot be reached.**
+  `get_all_books()` turned an API error into an empty list, so a wrong URL or a refused
+  token printed `errors: 0` and exited 0. It now raises, `sync_all()` counts the error and
+  skips the prune, and `resync.py` exits 1 with a hint.
+- **`/health` reports a failed database setup.** When the startup migration could not
+  write the database (a root-owned volume after an upgrade, for instance), the app logged
+  the error and `/health` still answered `healthy`. It now answers 503 `unhealthy`, and
+  the container shows as unhealthy (after 65 s with the shipped health check).
+- **The quickstart runs as written.** The image tags `lscr.io/linuxserver/bookstack:25.07`
+  and `lscr.io/linuxserver/mariadb:11.5` never existed, so `docker compose up` failed at
+  the first pull for every new installation. The tags are now `25.07.3` and `11.4.9`, and
+  a new CI job (`images` in `lint.yml`) runs `docker manifest inspect` on every tag in the
+  compose file. The documented `APP_KEY` command started the image's init system and hung;
+  it is now `docker run --rm --entrypoint /bin/bash lscr.io/linuxserver/bookstack:25.07.3
+  appkey`. Compose reads `.env` from `docker/`, not from the repository root, so every
+  variable stayed empty, `ALLOWED_VPN_IPS` included, and empty allows every source; every
+  documented command now passes `--env-file .env`. `docker compose restart` keeps the old
+  environment, so new tokens were never picked up; the docs now use `up -d`.
+- **The sample loader works next to a read-only chatbot token.** `samples/load-samples.py`
+  creates a book and pages with `BOOKSTACK_TOKEN_*`, which the docs now recommend to be
+  read-only, and BookStack answered 403. It now takes `SAMPLES_TOKEN_ID` and
+  `SAMPLES_TOKEN_SECRET` when set and explains a refusal.
+- **The backup before `down -v` saves the wiki.** The command in `docs/TROUBLESHOOTING.md`
+  (`mysqldump -u root -p"$MYSQL_ROOT_PASSWORD"`) wrote an empty file: the host shell
+  expands the variable, and the MariaDB image refuses root with a password from inside
+  the container. It now runs `mariadb-dump` as the application user and checks the dump
+  before anything is deleted.
+- **The MariaDB health check signs in.** It used root with `MYSQL_ROOT_PASSWORD`, which
+  was refused on every check and logged a warning every 30 s; it only passed because
+  `ping` reports a running server even when the sign-in fails. It now uses `mariadb-admin`
+  with the application user.
+- **The widgets say why a question was refused.** A 400 from the API showed as
+  "Connection error: HTTP error! status: 400". Both widgets now show the API's message,
+  and their input stops at 2,000 characters.
+- **Documentation corrections.** The API token is created under My Account > Access &
+  Security > API Tokens, or for another user under Settings > Users. BookStack's default
+  sign-in is `admin@admin.com` / `password`, not credentials printed at first boot. The
+  seven search strategies run over uploaded documents; wiki content is searched by
+  keyword (OR) at page and chunk level. A chunk can exceed the target size (up to about
+  1.2 times with the defaults, measured on random texts). `resync.py --dry-run` creates
+  the database schema if it is missing. The widget does not special-case `[::1]`.
+  "Before v0.1.5" meant v0.2.0. After fixing a root-owned volume, the chatbot needs a
+  `restart`, because `up -d` leaves an unchanged running container alone.
+
+### Security
+- **Questions are limited to 2,000 characters, and keyword extraction is linear.**
+  `QueryAnalyzer.extract_keywords()` checked for duplicates against a list, so its cost
+  grew with the square of the question: 40,000 distinct words took 7.6 s (measured on
+  v0.3.0), and a client past the allow-list could send up to the 16 MB request limit. The
+  widget API now answers 400 above 2,000 characters, cuts the page title at 300 and the
+  URL at 2,000 characters and drops context fields that are not text; 60,000 distinct
+  words are analysed in 0.2 s (test suite).
+- **The chatbot port is published on loopback by default.** `docker-compose.yml`
+  published port 8888 on all interfaces. Behind a proxy with `TRUSTED_PROXY_HOPS=1`, a
+  client that reached the port directly could set `X-Forwarded-For` itself and pass the
+  allow-list. The new `CHATBOT_BIND` defaults to `127.0.0.1`.
+- **BookStack permissions are documented as they work.** The README said BookStack owns
+  access control; in fact the chatbot indexes what the API token's user can see and
+  answers every client that passes the allow-list from that index. README, `SECURITY.md`,
+  `docs/SECURITY.md` and `docs/SETUP.md` now say so and set up a dedicated view-only user
+  for the token. A page restricted later leaves the index with the next full resync;
+  BookStack's `permissions_update` event is not handled yet.
+
+### Added
+- **`CHATBOT_BIND`**, the host address the chatbot port is published on (default
+  `127.0.0.1`), and **`SAMPLES_TOKEN_ID` / `SAMPLES_TOKEN_SECRET`** for the sample loader.
+  Both are in `.env.example` and `docs/CONFIGURATION.md`.
+- **Tests for every fix above.** The suite grew from 63 to 148 tests (plus the 2 live
+  tests), among them the real `BookStackClient` over a stand-in transport, the webhook
+  worker, `resync.py`, the Azure provider against a mocked transport, the compose file,
+  and both widget scripts run in node (skipped where node is missing).
+
+### Changed
+- **Webhook responses.** Deletions are applied at once and answered `200 processed`; the
+  same removal is queued once more, so a sync that read the item just before BookStack
+  deleted it cannot write it back. Every other event is answered `202 queued`. A failed
+  sync shows as `Webhook job ... gave up` in the chatbot log, not in BookStack. At most
+  500 jobs wait; beyond that the event is answered 503, and BookStack does not retry it.
+  Only create events are retried; an existing item that cannot be read is deleted or
+  hidden from the token's user.
+- **"Real-World Results" in the README is now "Reported Figures".** The numbers come from
+  the deployment this repository was extracted from and were not re-measured against this
+  code; the claim that no index rebuild had been needed is gone.
+
+### Upgrade notes
+No schema change and no reindex. For a running stack:
+
+1. Run every Compose command from the repository root with `--env-file .env`. Compose
+   never read the `.env` in the repository root, so a stack started as documented before
+   ran with empty variables. If you supplied the values another way (`docker/.env`,
+   exported variables), compare
+   `docker compose --env-file .env -f docker/docker-compose.yml config` with your running
+   setup before `up -d`.
+2. New image tags: `lscr.io/linuxserver/bookstack:25.07.3` and
+   `lscr.io/linuxserver/mariadb:11.4.9`. The previous tags never existed, so your
+   `mariadb_data` volume was created by the tag you chose yourself. Check it first with
+   `docker exec bookstack_db mariadb --version`: from 11.4.x the update to 11.4.9 was
+   tested on an existing volume; if you run a newer MariaDB, keep your tag rather than
+   going back.
+3. If the `chatbot_data` volume was created by an image before v0.3.0 and is root-owned,
+   fix it before the first `up -d`:
+
+       docker compose --env-file .env -f docker/docker-compose.yml run --rm --user root chatbot chown -R 1000:1000 /app/data
+
+4. The chatbot port is now published on `127.0.0.1` only. If clients reached port 8888
+   directly on the server's address, set `CHATBOT_BIND=0.0.0.0` (IPv4 only) and fill in
+   `ALLOWED_VPN_IPS` first.
+5. In BookStack's webhook, additionally subscribe `recycle_bin_restore`.
+6. Recreate the API token for a dedicated BookStack user whose role sees only what
+   everyone with chatbot access may read (`docs/SETUP.md`, step 5), then run a full resync
+   once so that restricted pages already in the index are dropped:
+
+       docker compose --env-file .env -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+
 ## [0.3.0] - 2026-09-28: Webhooks, full resyncs and chunk search work, and the index no longer corrupts itself
 
 ### Fixed

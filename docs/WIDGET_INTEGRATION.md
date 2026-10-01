@@ -22,8 +22,9 @@ Reload any wiki page. The chat bubble appears in the lower-right corner.
 
 `getApiUrl()` decides at load time, from `window.location`, and nothing overrides it:
 
-- On `localhost`, `127.0.0.1` or `::1`, it posts to `http://<hostname>:8888/chat/api/widget`,
-  the chatbot's published port.
+- On `localhost` or `127.0.0.1`, it posts to `http://<hostname>:8888/chat/api/widget`,
+  the chatbot's published port. (The IPv6 loopback `[::1]` is not special-cased and takes the
+  branch below.)
 - Anywhere else, it posts to `<origin>/chat/api/widget`, where the origin is the page's
   own scheme, host and port, and expects a reverse proxy to forward `/chat/api/` to the
   chatbot. Before v0.3.0 the port was dropped, so BookStack served on a non-default port
@@ -42,7 +43,9 @@ otherwise a new one starts. Other clients can send the id in the JSON body as
 `session_id` instead.
 
 With every question the widget sends the current page as `bookstack_context`: title,
-URL, breadcrumbs and up to 20,000 characters of the page text. That text goes into the
+URL, breadcrumbs and up to 20,000 characters of the page text. The server bounds what a
+client sends: a question of more than 2,000 characters is answered with `400`, the title is
+cut at 300 characters and the URL at 2,000, and fields that are not text are dropped. That text goes into the
 prompt as context for questions like "summarise this page"; it does not influence the
 search.
 

@@ -24,6 +24,9 @@ MAX_SESSIONS = 5000
 # Messages kept per session, and how many of them go to the model
 MAX_STORED_MESSAGES = 20
 HISTORY_MESSAGES = 10
+# Longest question accepted. Retrieval, the log and the prompt all scale with it,
+# and no real question needs more.
+MAX_MESSAGE_CHARS = 2000
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant with access to two knowledge sources:\n\n"

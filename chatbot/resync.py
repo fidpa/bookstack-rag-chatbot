@@ -75,6 +75,12 @@ def main(argv=None) -> int:
         f"pages: {result['pages']}, pruned: {result['removed']}, "
         f"errors: {result['errors']}"
     )
+    if result["errors"]:
+        print(
+            "The sync hit errors, so nothing was pruned. Check the log above: "
+            "BOOKSTACK_API_URL, the API token, or a book that failed to load.",
+            file=sys.stderr,
+        )
     return 1 if result["errors"] else 0
 
 

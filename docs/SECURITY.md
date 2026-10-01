@@ -13,7 +13,11 @@ Two decorators, both in `chatbot/utils/rate_limiter.py`:
 - `rate_limiter.ip_limit()` applies a sliding per-IP window, `RATE_LIMIT_PER_MINUTE`
   requests per 60 seconds, default 30. It is on `/chat/api/widget` only.
 
-Both run before any LLM call. Three things are worth knowing about the allow-list
+Both run before any LLM call. Neither limits what one request costs, so the widget API
+refuses questions longer than 2,000 characters and bounds the page title and URL it takes
+from the client (the page text is cut at 20,000 characters); keyword extraction used to be
+quadratic in the length of the question, which made one long question enough to occupy a
+waitress thread for seconds. Three things are worth knowing about the allow-list
 before you rely on it:
 
 1. **An empty `ALLOWED_VPN_IPS` allows every source.** The decorator logs one warning
@@ -25,19 +29,40 @@ before you rely on it:
    request then comes from the proxy's address, so set `TRUSTED_PROXY_HOPS=1`: werkzeug's
    `ProxyFix` takes the entry that proxy appended (the rightmost) and ignores what the
    client sent before it. That is only sound while port 8888 cannot be reached around
-   the proxy; a client talking to it directly could otherwise send the header itself.
+   the proxy (`CHATBOT_BIND` defaults to `127.0.0.1` for this reason); a client talking to it directly could otherwise send the header itself.
    Before v0.3.0 the leftmost entry was trusted, which any client controls.
 
 The rate limiter keeps its request log in memory, shared by the waitress threads under
 a lock, and forgets clients without requests in the last minute.
 
-Not behind the allow-list: `/health` (status and version), `/` (a redirect to
+Not behind the allow-list: `/health` (status and version; `503` when the database setup
+failed at startup), `/` (a redirect to
 BookStack), `/chat/widget` (the standalone chat page, whose API calls are guarded),
 `/favicon.ico`, the static route, and `GET|POST /webhook/bookstack/test`, which
 answers unauthenticated with the list of accepted webhook events. `/debug` lists the
 URL map but returns 403 unless `FLASK_DEBUG=true`.
 
 Error responses carry a generic message; exception text stays in the log.
+
+## BookStack permissions do not apply to answers
+
+The chatbot has no identity for the person asking. It indexes what the BookStack API
+token's user can see (the API applies that user's role and page permissions), and it
+answers every client that passes the allow-list from that one index. Checked against
+BookStack 25.07.3: a page restricted to the Admin role redirects an anonymous visitor to
+the login page, while the chatbot, running with an administrator's token, indexed it and put
+its text into the retrieved context for a request that carried no BookStack session at all.
+
+So the token decides who may read what through the chatbot:
+
+- Create it for a dedicated user whose role can only view content that everyone with
+  chatbot access may read (see [SETUP.md](SETUP.md), step 5). Never use an administrator's.
+- Restricting a page afterwards removes it from the index only with the next full resync
+  (`resync.py --full-resync`). BookStack does send a `permissions_update` webhook for such a
+  change, but the chatbot does not subscribe to it yet, so run the resync after changing
+  permissions on content the token's user could see.
+- A deployment that needs per-user answers needs a different design; the chatbot does not
+  offer one.
 
 ## Rendering of model output
 
@@ -57,6 +82,7 @@ the prompt that way.
 
 - Widget XSS through model or wiki content, by the `textContent` rule above
 - IP allow-list bypass, within the limits above
+- A token that can see more than the chatbot's audience may read (see above): your responsibility when you create it
 - Rate-limit exhaustion of the LLM budget
 - BookStack API-token theft via misconfiguration
 - SQL injection through the admin CLI
@@ -114,7 +140,7 @@ Before exposing this beyond `localhost`, work through the list.
 
 - [ ] Terminate TLS at a reverse proxy (nginx, Caddy, Traefik). The chatbot speaks plain HTTP.
 - [ ] Restrict `/chat/api/` and `/webhook/` to your LAN or VPN at the proxy, not only at the chatbot.
-- [ ] Behind a proxy, set `TRUSTED_PROXY_HOPS=1` and publish only the proxy, not port 8888. `docker/nginx-example.conf` replaces `X-Forwarded-For` rather than appending to it.
+- [ ] Behind a proxy, set `TRUSTED_PROXY_HOPS=1` and publish only the proxy, not port 8888 (the default `CHATBOT_BIND=127.0.0.1` keeps it on the host; do not widen it). `docker/nginx-example.conf` replaces `X-Forwarded-For` rather than appending to it.
 - [ ] Put a real CIDR list in `ALLOWED_VPN_IPS`. Empty means allow all, and `0.0.0.0/0` means the same thing with more typing.
 
 ### Application layer
@@ -138,7 +164,7 @@ The shipped `docker-compose.yml` already sets:
 - Health checks on all three services
 - CPU and memory limits on `chatbot` (2 vCPU / 4 GB, reserving 0.5 / 512 MB). BookStack and MariaDB run without limits.
 - `user: "1000:1000"` on `chatbot`; the image itself also runs as uid 1000 and owns `/app/data`
-- Pinned image tags (`linuxserver/bookstack:25.07`, `linuxserver/mariadb:11.5`)
+- Pinned image tags (`linuxserver/bookstack:25.07.3`, `linuxserver/mariadb:11.4.9`; a tag that does not exist fails at `docker compose up`, so check them with `docker manifest inspect` when you change them)
 
 You may want to add:
 

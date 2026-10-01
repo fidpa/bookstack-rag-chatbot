@@ -301,11 +301,17 @@ class ContentSyncService:
         stats = {"books": 0, "chapters": 0, "pages": 0, "removed": 0, "errors": 0}
         seen: Set[Tuple[int, str]] = set()
 
-        # A full walk must see BookStack as it is now, not as cached minutes ago.
-        self.client.invalidate_cache()
         self._walk_errors = 0
 
-        books = self.client.get_all_books()
+        # An unreachable BookStack or a refused token must not look like an empty
+        # wiki: count it as an error, which also skips the prune below.
+        try:
+            books = self.client.get_all_books()
+        except Exception as e:
+            logger.error(f"Could not list the books: {e}")
+            stats["errors"] += 1
+            books = []
+
         for book in books:
             if self.sync_book(book["id"], seen=seen):
                 stats["books"] += 1
@@ -551,6 +557,15 @@ class ContentSyncService:
                 )
 
         logger.debug(f"Stored {type} {bookstack_id} ({len(chunks)} chunks): {title}")
+
+    def is_indexed(self, content_type: str, bookstack_id: int) -> bool:
+        """True if the index holds this item (`content_type`: page, chapter, book)."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM bookstack_content WHERE bookstack_id = ? AND type = ?",
+                (bookstack_id, content_type),
+            ).fetchone()
+        return row is not None
 
     def remove_page_from_index(self, page_id: int):
         """

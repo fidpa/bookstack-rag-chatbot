@@ -54,23 +54,28 @@ class QueryAnalyzer:
         # "wi-fi" and "Überstunden" must all survive.
         words = re.findall(r"\w+(?:-\w+)*", query.lower(), flags=re.UNICODE)
 
-        # Stopwords filtern
-        keywords = []
+        # Stopwords filtern. `seen` mirrors `keywords` so that the duplicate check
+        # stays constant-time: a list lookup here made a long question quadratic.
+        keywords: List[str] = []
+        seen = set()
         for word in words:
-            if len(word) >= 3 and word not in STOPWORDS and word not in keywords:
+            if len(word) >= 3 and word not in STOPWORDS and word not in seen:
                 keywords.append(word)
+                seen.add(word)
 
         # Hyphenated compounds also contribute their parts:
         # "Self-Service-Portal" -> "self-service-portal", "self", "service", "portal"
         compound_pattern = [w for w in words if "-" in w]
         for compound in compound_pattern:
-            if compound not in keywords:
+            if compound not in seen:
                 keywords.append(compound)
+                seen.add(compound)
             # Teile auch hinzufügen
             parts = compound.split("-")
             for part in parts:
-                if len(part) >= 3 and part not in STOPWORDS and part not in keywords:
+                if len(part) >= 3 and part not in STOPWORDS and part not in seen:
                     keywords.append(part)
+                    seen.add(part)
 
         return keywords
 
@@ -129,6 +134,9 @@ class QueryAnalyzer:
 
         # Deduplicate, keeping order so the queries built from these are stable
         must_have = list(dict.fromkeys(must_have))
-        nice_to_have = [t for t in dict.fromkeys(nice_to_have) if t not in must_have]
+        must_have_set = set(must_have)
+        nice_to_have = [
+            t for t in dict.fromkeys(nice_to_have) if t not in must_have_set
+        ]
 
         return must_have, nice_to_have

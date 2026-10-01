@@ -27,13 +27,19 @@ cd bookstack-rag-chatbot
 cp .env.example .env
 ```
 
+Every `docker compose` command in this guide is run from the repository root and
+names the file explicitly: `docker compose --env-file .env -f docker/docker-compose.yml …`.
+Compose reads `.env` from the directory of the compose file (`docker/`), not from
+where you run it, so without `--env-file .env` all the values below stay empty (and
+an empty `ALLOWED_VPN_IPS` allows every source).
+
 Open `.env` in your editor and fill in **at minimum**:
 
 ```ini
 SECRET_KEY=                  # openssl rand -hex 32
 BOOKSTACK_DB_PASSWORD=       # any strong password
 MYSQL_ROOT_PASSWORD=         # any strong password
-BOOKSTACK_APP_KEY=           # see comment in .env.example for how to generate
+BOOKSTACK_APP_KEY=           # see .env.example: docker run --rm --entrypoint /bin/bash lscr.io/linuxserver/bookstack:25.07.3 appkey
 AZURE_OPENAI_API_KEY=        # OR configure Ollama (see ENABLE_OLLAMA_FALLBACK)
 AZURE_OPENAI_ENDPOINT=       # required alongside the key; Azure is skipped without it
 ALLOWED_VPN_IPS=             # e.g. 192.168.0.0/16,172.16.0.0/12; empty allows every source IP
@@ -54,7 +60,7 @@ network; [SECURITY.md](SECURITY.md) has the rest of the list.
 ## 3. Boot the stack
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
 This starts three containers: `bookstack`, `bookstack_db`, `chatbot`. The first boot takes ~30 seconds while BookStack runs database migrations.
@@ -62,7 +68,7 @@ This starts three containers: `bookstack`, `bookstack_db`, `chatbot`. The first 
 Verify everything is healthy:
 
 ```bash
-docker compose -f docker/docker-compose.yml ps
+docker compose --env-file .env -f docker/docker-compose.yml ps
 # All services should show "(healthy)" after ~1 minute
 ```
 
@@ -73,12 +79,28 @@ Open `http://localhost:6875` and sign in with BookStack's default admin account,
 
 ## 5. Generate a BookStack API token
 
-In BookStack:
+**Decide whose token this is before you create it.** The chatbot indexes everything the
+token's user can see, and it answers every client that passes the allow-list from that index:
+BookStack's role and page permissions are not applied per asker. A token from an
+administrator therefore puts restricted books and pages into the answers for everyone.
+Create a dedicated user instead:
 
-1. Click your avatar (top-right) → **My Account**.
-2. Scroll to **API Tokens** → **Create Token**.
+- **Settings → Roles → Create New Role** (say `chatbot`): system permission *Access System API*,
+  and only the *View* permissions for all books, chapters and pages (no create, edit or delete).
+- **Settings → Users → Add New User** with only that role.
+
+A page whose permissions exclude that role stays out of the index, and a full resync drops it
+again if it was restricted after it had been indexed. The menu names are those of
+BookStack 25.07; the token user's visibility is what counts, whatever the menus are called.
+
+Still signed in as the administrator, create the token for that user:
+
+1. **Settings → Users**, open the user you just created.
+2. Under **API Tokens**, click **Create Token**.
 3. Set a name (e.g. `chatbot`) and an expiry date.
 4. Copy the **Token ID** and the **Token Secret**. The secret is shown **only once**.
+
+(Your own tokens are under **My Account → Access & Security → API Tokens**.)
 
 Put both into `.env`:
 
@@ -87,17 +109,20 @@ BOOKSTACK_TOKEN_ID=...
 BOOKSTACK_TOKEN_SECRET=...
 ```
 
-Restart the chatbot so it picks up the new tokens:
+Recreate the chatbot so it picks up the new tokens:
 
 ```bash
-docker compose -f docker/docker-compose.yml restart chatbot
+docker compose --env-file .env -f docker/docker-compose.yml up -d chatbot
 ```
+
+A plain `restart` does not do this: it restarts the container with the environment it
+was created with, so the tokens would stay empty.
 
 ## 6. Set up the webhook
 
-Webhooks keep the index in step with every edit. In BookStack, go to **Settings →
+Webhooks keep the index in step with every edit: BookStack reports the change and the chatbot reads the item back a couple of seconds later. In BookStack, go to **Settings →
 Webhooks → Create Webhook**, point it at `http://chatbot:8888/webhook/bookstack` and
-select the 13 events listed in [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
+select the 14 events listed in [BOOKSTACK_WEBHOOKS.md](BOOKSTACK_WEBHOOKS.md).
 
 ## 7. Embed the chat widget
 
@@ -111,25 +136,31 @@ Reload any wiki page. The chat bubble appears in the lower-right corner.
 
 ## 8. Load and index the demo content
 
-Make sure your shell has the BookStack credentials exported:
+Give the loader the BookStack credentials from `.env` (in a subshell, so `.env` does not
+end up exported in your own shell, where its values would win over later edits of `.env`
+the next time you run Compose):
 
 ```bash
 pip install requests
-set -a; . ./.env; set +a
-python3 samples/load-samples.py
+(set -a; . ./.env; set +a; python3 samples/load-samples.py)
 ```
 
-The loader talks to the BookStack API over `BOOKSTACK_EXTERNAL_URL` with the token you
-just created. It refuses to create duplicate pages, so a second run exits non-zero
-rather than doubling the content; `--delete` removes the book again.
+The loader creates a book and pages, which the read-only token from step 5 may not do.
+Give it an admin's token for this run: create one under **My Account → Access & Security →
+API Tokens**, put it into `.env` as `SAMPLES_TOKEN_ID` and `SAMPLES_TOKEN_SECRET`, and delete
+the token in BookStack once the samples are loaded. Without those two the loader falls back
+to `BOOKSTACK_TOKEN_ID`/`BOOKSTACK_TOKEN_SECRET` and stops with a hint if BookStack refuses.
+It talks to the BookStack API over `BOOKSTACK_EXTERNAL_URL`. It refuses to create duplicate
+pages, so a second run exits non-zero rather than doubling the content; `--delete` removes
+the book again.
 
 This creates one BookStack book called *Acme Inc. Knowledge Base* with five sample
-pages. With the webhook from step 6 in place, the chatbot indexes each page as it is
-created. Content that existed before the webhook, or a stack without one, needs a
-full sync:
+pages. With the webhook from step 6 in place, the chatbot indexes each page a few seconds
+after it is created. Content that existed before the webhook, or a stack without one,
+needs a full sync:
 
 ```bash
-docker compose -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
+docker compose --env-file .env -f docker/docker-compose.yml exec chatbot python resync.py --full-resync
 ```
 
 `python resync.py --dry-run` in the same place shows what the index holds.
@@ -140,9 +171,9 @@ Open any page in BookStack. Click the chat bubble. Try:
 
 > What are Acme's core working hours?
 
-You should get an answer with its sources named. On the production deployment behind
-this repository the median is 1.8 s end to end with Azure OpenAI `gpt-4o-mini`; a cold
-start after boot is slower.
+You should get an answer with its sources named. The deployment this repository was
+extracted from reported a median of 1.8 s end to end with Azure OpenAI `gpt-4o-mini`
+(not re-measured against this release); a cold start after boot is slower.
 
 ## Where to next
 
