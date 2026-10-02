@@ -141,5 +141,8 @@ Custom HTML head content is one field applied everywhere; to scope it, wrap the
 Widget labels are English literals in `widget.html`; translating them means editing the
 file. The answers are a different matter: the default system prompt in
 `chatbot/chat/widget_service.py` ends with "Respond in the same language the user writes
-in", so the bot follows the user as far as the configured model can. Override the whole
-prompt with `CHATBOT_SYSTEM_PROMPT` if you want it pinned to one language.
+in", so the bot follows the user as far as the configured model can. The rule on
+reference material that follows every system prompt says this means the language of the
+question itself, not of the English lines the chatbot wraps around the context. Replace
+the instructions with `CHATBOT_SYSTEM_PROMPT` if you want the bot pinned to one language;
+the rule is appended to your prompt too (see [CONFIGURATION.md](CONFIGURATION.md)).

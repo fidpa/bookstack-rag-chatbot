@@ -24,7 +24,7 @@ real BookStack instances.
 | `test_resync.py` | `resync.py`: report and exit code, also when BookStack is unreachable |
 | `test_webhooks.py` | `/webhook/bookstack` with BookStack-shaped payloads, payload URL, HMAC check, the queued sync with its retries |
 | `test_webhook_worker.py` | The background worker behind the webhooks: order, delays, retries, giving up, the queue limit |
-| `test_widget.py` | `/chat/api/widget`: sessions, prompt assembly, size limits, system prompt default, error handling, rate limit, allow-list with and without a trusted proxy, CORS, `/health`, logging |
+| `test_widget.py` | `/chat/api/widget`: sessions, prompt assembly and the fenced context (prompt injection), size limits, system prompt default, error handling, rate limit, allow-list with and without a trusted proxy, CORS, `/health`, logging |
 | `test_widget_js.py` | Both widget scripts run in node (`tests/js/widget_harness.js`): API URL with port, session id, `postMessage` origin; skipped without node |
 | `test_azure_provider.py` | `AzureProvider` against a mocked transport: retries, timeout, `reraise`, no provider error text for visitors |
 | `test_retrieval.py` | End to end retrieval from wiki pages and uploaded samples into the prompt context |

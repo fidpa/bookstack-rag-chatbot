@@ -22,7 +22,7 @@ Navigation hub for the `bookstack-rag-chatbot` docs. Files are organised loosely
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Why three services, why SQLite, why widget-only, and what a Postgres+pgvector move would actually cost |
 | [RAG_DESIGN.md](RAG_DESIGN.md) | Chunking, the seven FTS5 strategies and when each fires, score fusion, and what the prompt really contains |
-| [SECURITY.md](SECURITY.md) | What guards the endpoints, what prompt injection is not defended against, hardening checklist |
+| [SECURITY.md](SECURITY.md) | What guards the endpoints, how far the prompt-injection hardening goes, hardening checklist |
 
 ## How-to
 

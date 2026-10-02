@@ -4,7 +4,7 @@ Dual-RAG: BookStack + Knowledge Base Integration
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # This one service covers both sources: HybridSearchService queries the
 # bookstack_* tables alongside kb_*, so wiki pages and uploaded documents are
@@ -34,7 +34,7 @@ class ChatContextBuilder:
 
         Anything that is not a dict, and every field that is not text, is dropped.
         The page text may be one character longer than PAGE_CONTEXT_CHARS so that
-        build_combined_context() can still tell it was cut.
+        build_sections() can still tell it was cut.
         """
         if not isinstance(raw, dict):
             return {}
@@ -51,20 +51,24 @@ class ChatContextBuilder:
         return cleaned
 
     @classmethod
-    def build_combined_context(
+    def build_sections(
         cls, user_message: str, bookstack_context: Optional[dict] = None
-    ) -> str:
+    ) -> List[Tuple[str, str]]:
         """
-        Build context from BookStack + Knowledge Base (Dual-RAG)
+        The context for one question, as (label, text) pieces of material.
+
+        widget_service fences each piece (chat/prompt_framing.py), so the labels
+        are fixed strings and never come from the page or the search.
 
         Args:
             user_message: User's message
             bookstack_context: BookStack page context passed from widget
 
         Returns:
-            Combined context string from BookStack + KB
+            The current page first when the widget sent its text, then the
+            retrieved excerpts when the search found any; possibly empty
         """
-        combined_context = ""
+        sections: List[Tuple[str, str]] = []
         bookstack_context = cls.clean_page_context(bookstack_context)
 
         # 1. The page the visitor is looking at, as sent by the widget.
@@ -77,13 +81,14 @@ class ChatContextBuilder:
                 page_url = bookstack_context.get("url", "")
 
                 if page_content:
-                    combined_context = f"BookStack Page: {page_title}\n"
+                    page = f"Title: {page_title}\n"
                     if page_url:
-                        combined_context += f"URL: {page_url}\n"
+                        page += f"URL: {page_url}\n"
                     excerpt = page_content[: cls.PAGE_CONTEXT_CHARS]
                     if len(page_content) > cls.PAGE_CONTEXT_CHARS:
                         excerpt += "..."
-                    combined_context += f"Content:\n{excerpt}"
+                    page += f"Content:\n{excerpt}"
+                    sections.append(("current page the user is viewing", page))
                     logger.info(
                         f"Added BookStack page context: {page_title} ({len(page_content)} chars)"
                     )
@@ -98,8 +103,8 @@ class ChatContextBuilder:
             user_query=user_message, max_docs=3
         )
         if kb_context:
-            if combined_context:
-                combined_context += "\n\n--- Retrieved Documents ---\n\n"
-            combined_context += kb_context
+            sections.append(
+                ("retrieved from the wiki and uploaded documents", kb_context)
+            )
 
-        return combined_context
+        return sections

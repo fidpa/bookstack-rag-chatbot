@@ -32,7 +32,7 @@ This project is designed to run **inside a trusted network** (LAN, VPN, or behin
 | Surface | In scope |
 |---|---|
 | Widget XSS (BookStack-page injection) | ✅ |
-| Prompt injection via document content | ⚠️ in scope, **not mitigated today** (see [docs/SECURITY.md](docs/SECURITY.md#prompt-injection-not-mitigated-today)) |
+| Prompt injection via document content | ⚠️ in scope, **made harder, not prevented**: the context is fenced as data with a random tag; a model can still be steered, and a planted false fact is not detected (see [docs/SECURITY.md](docs/SECURITY.md#prompt-injection-harder-not-prevented)) |
 | IP allow-list bypass via reverse-proxy headers | ✅ |
 | Reading content that BookStack restricts, through the chatbot | ⚠️ by design: the index holds what the token's user sees ([docs/SECURITY.md](docs/SECURITY.md#bookstack-permissions-do-not-apply-to-answers)) |
 | Rate-limit bypass | ✅ |

@@ -480,6 +480,19 @@ def test_a_restore_walk_is_repeated_when_bookstack_cannot_list_the_books(
     assert "Leave" in titles(db)
 
 
+def test_a_restore_walk_of_an_empty_wiki_is_not_repeated(client, db, fake_bookstack):
+    # No book and no error is a finished walk, not an unreachable BookStack.
+    calls = []
+
+    def get_all_books():
+        calls.append(1)
+        return []
+
+    fake_bookstack.get_all_books = get_all_books
+    post(client, {"event": "recycle_bin_restore", "url": "https://wiki.example.com/x"})
+    assert calls == [1]
+
+
 def test_a_full_queue_refuses_the_event_with_503(client, monkeypatch):
     monkeypatch.setattr(webhooks, "SYNC_DELAY_SECONDS", 60.0)
     monkeypatch.setattr(webhooks.worker, "_max_pending", 1)

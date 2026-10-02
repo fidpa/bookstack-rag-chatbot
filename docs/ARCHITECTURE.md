@@ -167,7 +167,7 @@ under 10 ms on that corpus.
 | Which LLM is used | `.env` (`AZURE_OPENAI_*`, `ENABLE_OLLAMA_FALLBACK`) |
 | Add a new LLM provider | `chatbot/llm/providers/` (implement `LLMProvider`) and register in `chatbot/llm/factory.py` |
 | Chunk size / overlap | `DEFAULTS` in `chatbot/bookstack/chunking.py` for wiki content and in `chatbot/documents/knowledge_base/services/chunking.py` for uploaded docs; the algorithm is `chatbot/utils/text_chunking.py` |
-| Prompt template | `chatbot/chat/widget_service.py` (`DEFAULT_SYSTEM_PROMPT`, or override it with `CHATBOT_SYSTEM_PROMPT`) |
+| Prompt template | `chatbot/chat/widget_service.py` (`DEFAULT_SYSTEM_PROMPT`, or override it with `CHATBOT_SYSTEM_PROMPT`); how the context is fenced and the rule appended to every prompt: `chatbot/chat/prompt_framing.py` |
 | Search terms, stopwords, synonyms | `chatbot/documents/knowledge_base/services/query_processor/` (`constants.py`, `preprocessor.py`) |
 | How retrieved sources are rendered | `chatbot/documents/knowledge_base/services/strategies/chunk_strategy.py` |
 | How much of the current page travels along | `ChatContextBuilder.PAGE_CONTEXT_CHARS` in `chatbot/chat/context_builder.py` |

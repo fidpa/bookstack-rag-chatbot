@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-02: Wiki text reaches the model as fenced data, no longer as system instructions
+
+### Security
+- **Wiki pages, uploaded documents and the page text the widget sends no longer reach
+  the model as a system message.** Up to v0.5.0 `chatbot/chat/widget_service.py` put all
+  context verbatim into a system message, without delimiters, so a page that said
+  "ignore your instructions" spoke with the authority of the system prompt, and a
+  visitor's page text could forge the separator in front of the retrieved documents. The
+  context now goes into the user turn, in front of the question, and each piece sits
+  between `<<<MATERIAL <tag>: <label>>>>` and `<<<END MATERIAL <tag>>>>`, with a random
+  16-hex-digit tag that is new for every request and does not occur in the material.
+  ASCII text that imitates a marker is broken up (`<<<END MATERIAL` becomes
+  `<< <END MATERIAL`). A fixed rule appended to every system prompt names the tag and
+  says that the material is data, never instructions, and a reminder between the
+  material and the question repeats it. The history keeps the bare questions. Measured
+  with Ollama `qwen2.5:7b` and `qwen2.5:3b` (CPU, the provider's default temperature
+  0.7), the messages v0.5.0 and this version build for one question without history,
+  five planted instructions and one language check, 10 runs each: a page text forging
+  the end of the context steered the 7B model in 10 of 10 runs before and in none after;
+  a planted wrong vacation figure steered the 3B model in 8 of 10 before and in none
+  after. An appended password-reset link and a role change worked in every run on both
+  models, before and after, and on the 3B model the forged end of context, never
+  followed before, worked in 3 of 10. Over the four planted instructions that worked at
+  least once, both models together followed them in 53 of 80 runs, against 68 of 80
+  before; of the layouts measured with both models and the same marker handling, this
+  one let the fewest through (the fenced material as a separate system message: 56).
+  This makes injection harder; it does not prevent it. Azure OpenAI was not measured,
+  and a planted false fact contains no instruction to ignore. `docs/SECURITY.md`
+  ("Prompt Injection: harder, not prevented") has the full table and says what is and is
+  not covered, and why answers are not checked for citations.
+
+### Changed
+- **Every system prompt ends with the rule on reference material, a custom
+  `CHATBOT_SYSTEM_PROMPT` included.** The variable still replaces the built-in
+  instructions; the rule (`MATERIAL_RULES` in the new `chatbot/chat/prompt_framing.py`)
+  is appended to either, because a custom prompt would otherwise drop it unnoticed. The
+  built-in prompt now refers to "the material labelled as the current page" instead of
+  "the current page context". The rule also says that "the language the user writes in"
+  means the language of the question, not of the English lines wrapped around the
+  context.
+- **`ChatContextBuilder.build_combined_context` is now `build_sections`**, and returns
+  `(label, text)` pieces instead of one string. Only code of your own that calls it is
+  affected.
+
+### Fixed
+- **The README said the chatbot listens to 14 webhook events.** It has listened to 15
+  since v0.5.0 added `permissions_update`; the feature list, the module table and the
+  documentation index now say so, like the diagram and `docs/` already did.
+
+### Upgrade notes
+No schema change, no new variable, no reindex.
+
+1. Update the code and rebuild the chatbot (`up -d` alone keeps the old image):
+
+       docker compose --env-file .env -f docker/docker-compose.yml up -d --build
+
+   Check that `curl -s localhost:8888/health` reports `0.6.0`.
+2. If you set `CHATBOT_SYSTEM_PROMPT`: the rule on reference material is appended to it
+   now. Read the prompt once: an instruction there that refers to "the context" or to
+   the context as part of the system prompt should refer to the reference material in
+   the user's message instead. Nothing else needs to change.
+
 ## [0.5.0] - 2026-10-02: Restricted pages leave the index within seconds, and large wikis sync despite BookStack's rate limit
 
 ### Added

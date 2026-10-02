@@ -1,6 +1,6 @@
 # BookStack RAG Chatbot
 
-![Version](https://img.shields.io/badge/version-0.5.0-blue)
+![Version](https://img.shields.io/badge/version-0.6.0-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)
 ![Docker](https://img.shields.io/badge/Docker-20.10%2B-blue?logo=docker)
@@ -18,7 +18,7 @@ Self-hosted wikis fill up with content that keyword search cannot find, and a pu
 - **Hybrid retrieval over two indexes**: seven SQLite FTS5 strategies (title and tags, exact phrase, AND, OR, proximity, chunk-level, fuzzy) run over an independent knowledge base of uploaded documents; the BookStack content is searched by keyword (OR) at page and chunk level. A document that several strategies find gets a fusion bonus.
 - **Two LLM providers behind one interface**: `LLMProvider` in `chatbot/llm/base.py`, with Azure OpenAI and Ollama implementations. The factory picks by which credentials are present.
 - **Embedded JS widget**: one `<script>` snippet in BookStack's custom-head setting, and the chat bubble appears on every page.
-- **Webhook sync, no cron**: 14 BookStack events (page, chapter, book, recycle-bin restore) reach the chatbot, which reads the item back a couple of seconds later and moves the index as the wiki is edited: creations, edits, moves, deletions and restores. `chatbot/resync.py --full-resync` rebuilds the index where webhooks were missed.
+- **Webhook sync, no cron**: 15 BookStack events (page, chapter, book, recycle-bin restore, changed permissions) reach the chatbot, which reads the item back a couple of seconds later and moves the index as the wiki is edited: creations, edits, moves, deletions, restores and permission changes. `chatbot/resync.py --full-resync` rebuilds the index where webhooks were missed.
 - **IP allow-list and per-IP rate limit**: both are decorators on the widget endpoint in `chatbot/utils/rate_limiter.py` and run before any LLM call. The limit is a sliding window, 30 requests per minute by default.
 - **Admin CLI**: `scripts/kb_admin.py` carries five subcommands (`documents`, `bulk`, `index`, `stats`, `maintenance`) for knowledge-base documents, reindexing, statistics and maintenance.
 - **Hardened Docker stack**: `no-new-privileges:true` and a healthcheck on all three services, CPU and memory limits on the chatbot container.
@@ -31,6 +31,7 @@ Self-hosted wikis fill up with content that keyword search cannot find, and a pu
 > - ❌ **SQLite FTS5 is single-writer.** The deployment behind this repository indexes about 150 pages. The 10 000-page figure quoted in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is an estimate from FTS5's behaviour, not a measured ceiling.
 > - ❌ **Single-tenant.** One deployment serves one BookStack instance.
 > - ❌ **BookStack's permissions do not apply to answers.** The chatbot indexes everything the API token's user can see and answers every client that passes the IP allow-list from it, without knowing who is asking. A page that only some roles may open in BookStack can be quoted to anyone who reaches the chatbot. Create the token for a dedicated BookStack user whose role sees only what everyone with chatbot access may read, never for an administrator ([docs/SETUP.md](docs/SETUP.md), [docs/SECURITY.md](docs/SECURITY.md)).
+> - ⚠️ **Prompt injection is made harder, not prevented.** Wiki pages, uploaded documents and the page text the widget sends are fenced as data with a random tag and the model is told not to follow them, but a model can still be steered by text that someone who may edit the wiki planted there, and a planted false fact reads like any other. Treat write access to the wiki as influence over the answers ([docs/SECURITY.md](docs/SECURITY.md#prompt-injection-harder-not-prevented)).
 > - ⚠️ **Webhook syncs are delayed and best-effort.** BookStack sends create, move and sort events from inside its own database transaction, so the chatbot queues each event, reads BookStack back about two seconds later and tries again for roughly 20 seconds while the item is not visible yet or BookStack does not answer (longer if requests hang until their timeout, or while BookStack's API rate limit makes a request wait for the next minute; checked against BookStack 25.07.3). A job that still fails is logged (`gave up`) and left to the next full resync; jobs still queued when the container stops are lost ([docs/BOOKSTACK_WEBHOOKS.md](docs/BOOKSTACK_WEBHOOKS.md)).
 > - ⚠️ **Ollama fallback is off by default** (`ENABLE_OLLAMA_FALLBACK=false`), so a missing Azure key fails loudly instead of quietly reaching for an unhardened local model. Turn it on explicitly.
 > - ⚠️ **Some internal docstrings, comments and log messages are still in German**, a legacy of the original production deployment. They sit in the upload side of `chatbot/documents/knowledge_base/` (storage and the query analyzer). Everything a visitor sees, the env vars, the CLI and the rest of the code are English. The German stopword and intent lists in `query_processor/constants.py` are language data and stay. PRs translating the rest are welcome.
@@ -248,13 +249,14 @@ bookstack-rag-chatbot/
 | `chatbot/llm/factory.py` | Selects and instantiates a provider | Factory function |
 | `chatbot/llm/providers/` | Azure OpenAI, Ollama implementations | `openai`, `requests` |
 | `chatbot/bookstack/api_client.py` | BookStack REST client | `requests` |
-| `chatbot/bookstack/webhooks.py` | Webhook endpoint for 14 BookStack events; deletions at once, the rest queued | Flask blueprint |
+| `chatbot/bookstack/webhooks.py` | Webhook endpoint for 15 BookStack events; deletions at once, the rest queued | Flask blueprint |
 | `chatbot/bookstack/webhook_worker.py` | Runs the queued webhook syncs after the response, in order, with retries | `threading` |
 | `chatbot/bookstack/sync_service.py` | Index schema, sync walk, deletes, prune | SQLite FTS5 |
 | `chatbot/utils/text_chunking.py` | Chunking for wiki pages and uploads | Sentence- and line-aware sliding window |
 | `chatbot/documents/knowledge_base/` | KB ingestion (PDF/DOCX/MD), FTS5 indexing, hybrid search | `pypdfium2`, `pypdf`, `python-docx`, SQLite FTS5 |
 | `chatbot/chat/routes/api.py` | Widget query endpoint, guarded by allow-list and rate limit | Flask |
 | `chatbot/chat/widget_service.py` | Prompt assembly, in-memory conversation sessions | Flask |
+| `chatbot/chat/prompt_framing.py` | Fences the context as data and adds the rule that says so to every system prompt | `secrets`, `re` |
 | `chatbot/utils/rate_limiter.py` | IP allow-list, sliding-window rate limit | `ipaddress`, in-memory store |
 | `bookstack-integration/widget.html` | Embeddable chat bubble | Vanilla JS, no build step |
 | `scripts/kb_admin.py` | Admin CLI (documents, bulk, index, stats, maintenance) | `argparse` subcommands |
@@ -267,7 +269,7 @@ bookstack-rag-chatbot/
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions and trade-offs |
 | [RAG_DESIGN.md](docs/RAG_DESIGN.md) | Chunking, FTS5 multi-strategy retrieval, and score fusion |
 | [WIDGET_INTEGRATION.md](docs/WIDGET_INTEGRATION.md) | Embedding the widget into BookStack (or any other site) |
-| [BOOKSTACK_WEBHOOKS.md](docs/BOOKSTACK_WEBHOOKS.md) | The 14 webhook events and how they map to index operations |
+| [BOOKSTACK_WEBHOOKS.md](docs/BOOKSTACK_WEBHOOKS.md) | The 15 webhook events and how they map to index operations |
 | [SECURITY.md](docs/SECURITY.md) | Hardening guide for production deployments |
 | [KB_ADMIN_CLI.md](docs/KB_ADMIN_CLI.md) | Admin CLI command reference |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Every environment variable explained |

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from llm.base import LLMError
 from llm.factory import get_llm_provider
 from .context_builder import ChatContextBuilder
+from .prompt_framing import frame_question, material_rules, new_tag
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "2. **BookStack wiki**: team documentation pages\n\n"
     "Instructions:\n"
     "- Use ALL available sources. Prefer the most specific source for each claim.\n"
-    "- When the user asks about 'this page', refer to the current page context.\n"
+    "- When the user asks about 'this page', refer to the material labelled as the "
+    "current page.\n"
     "- Always cite sources briefly: e.g. 'according to the Onboarding wiki page' "
     "or 'from the uploaded document'.\n"
     "- Never quote long formal titles verbatim from the context — use a short description.\n"
@@ -49,6 +51,8 @@ def get_system_prompt() -> str:
 
     docker-compose.yml passes the variable through as an empty string when it
     is not set, so an empty value has to mean "use the default" as well.
+    The rule on reference material (prompt_framing.material_rules) is appended
+    to either; it is not part of what the variable replaces.
     """
     return os.getenv("CHATBOT_SYSTEM_PROMPT", "").strip() or DEFAULT_SYSTEM_PROMPT
 
@@ -189,27 +193,26 @@ def generate_widget_response(
         # into the context in full (see ChatContextBuilder); mixing its text into
         # the search query would make keyword extraction pick terms from the page
         # instead of from the question.
-        combined_context = ChatContextBuilder.build_combined_context(
-            user_message, bookstack_context
-        )
+        sections = ChatContextBuilder.build_sections(user_message, bookstack_context)
 
-        llm_messages: List[Dict[str, str]] = []
-        if combined_context:
-            llm_messages.append(
-                {
-                    "role": "system",
-                    "content": f"Relevant context from knowledge base:\n{combined_context}",
-                }
-            )
-        llm_messages.extend(history[-HISTORY_MESSAGES:])
-        llm_messages.append({"role": "user", "content": user_message})
+        # The context is written by others (wiki editors, uploaders, the visitor's
+        # browser), so it goes into the user turn as fenced material, not into a
+        # system message, and the system prompt says it is data. The history keeps
+        # the bare question; see prompt_framing.
+        tag = new_tag(text for _, text in sections)
+        llm_messages: List[Dict[str, str]] = list(history[-HISTORY_MESSAGES:])
+        llm_messages.append(
+            {"role": "user", "content": frame_question(user_message, sections, tag)}
+        )
+        system_prompt = f"{get_system_prompt()}\n\n{material_rules(tag)}"
 
         logger.info(
             f"Widget LLM request: {len(llm_messages)} messages, "
-            f"{len(combined_context)} context chars, provider {provider.name}"
+            f"{sum(len(text) for _, text in sections)} context chars, "
+            f"provider {provider.name}"
         )
 
-        response = provider.chat(llm_messages, system_prompt=get_system_prompt())
+        response = provider.chat(llm_messages, system_prompt=system_prompt)
         return response, True
 
     except LLMError as e:
